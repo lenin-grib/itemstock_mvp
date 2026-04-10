@@ -120,8 +120,10 @@ if uploaded_files:
                 "forecast_next_month",
                 "current_stock",
                 "ideal_stock",
-                "to_order",
+                "monthly_ideal_stock",
+                "to_order_week",
+                "to_order_month",
             ]
         ].sort_values("sku")
-        order_df = order_df.loc[order_df["to_order"] > 0]
+        order_df = order_df.loc[order_df["to_order_week"] > 0]
         st.dataframe(order_df)

@@ -45,6 +45,12 @@ def calculate_ideal_stock(
     df.loc[df["forecast_next_month"] == 0, "ideal_stock"] = 0
     df["ideal_stock"] = np.ceil(df["ideal_stock"]).astype(int)
 
+    df["monthly_ideal_stock"] = (
+        np.ceil(df["forecast_next_month"] * quote_multiplicator + min_items_in_stock)
+        .astype(int)
+    )
+    df.loc[df["forecast_next_month"] == 0, "monthly_ideal_stock"] = 0
+
     if sales_df is not None:
         sales_col = _find_sales_column(sales_df)
         if sales_col is not None and "date" in sales_df.columns:
@@ -58,10 +64,15 @@ def calculate_ideal_stock(
             df = df.merge(recent_sales, on="sku", how="left")
             df["recent_qty"] = df["recent_qty"].fillna(0)
             df.loc[df["recent_qty"] == 0, "ideal_stock"] = 0
+            df.loc[df["recent_qty"] == 0, "monthly_ideal_stock"] = 0
             df = df.drop(columns=["recent_qty"])
 
-    df["to_order"] = df["ideal_stock"] - df["current_stock"]
-    df["to_order"] = np.ceil(df["to_order"]).astype(int)
-    df["to_order"] = df["to_order"].clip(lower=0)
+    df["to_order_week"] = df["ideal_stock"] - df["current_stock"]
+    df["to_order_week"] = np.ceil(df["to_order_week"]).astype(int)
+    df["to_order_week"] = df["to_order_week"].clip(lower=0)
+
+    df["to_order_month"] = df["monthly_ideal_stock"] - df["current_stock"]
+    df["to_order_month"] = np.ceil(df["to_order_month"]).astype(int)
+    df["to_order_month"] = df["to_order_month"].clip(lower=0)
 
     return df

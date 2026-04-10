@@ -17,8 +17,16 @@ def load_multiple_files(uploaded_files):
     if not all_data:
         return pd.DataFrame()
 
-    return pd.concat(all_data, ignore_index=True)
+    result = pd.concat(all_data, ignore_index=True)
 
+    # если одна и та же пара sku/date попала из дублирующихся файлов,
+    # оставляем только одну запись
+    result = result.sort_values(["sku", "date"]).drop_duplicates(
+        subset=["sku", "date"],
+        keep="first"
+    )
+
+    return result
 
 
 def parse_single_file(file):
