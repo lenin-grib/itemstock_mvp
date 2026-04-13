@@ -49,7 +49,7 @@ def calculate_ideal_stock(
         min_items_in_stock = params.get('min_items_in_stock', 5)
 
     df = forecast_df.merge(stock_df, on="sku", how="left")
-    df["current_stock"] = df["current_stock"].fillna(0)
+    df["current_stock"] = df["current_stock"].fillna(0).astype(int)
 
     # идеальный запас
     df["ideal_stock"] = df["forecast_next_week"] * quote_multiplicator + min_items_in_stock
