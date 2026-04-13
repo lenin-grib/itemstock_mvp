@@ -6,6 +6,7 @@ st.set_page_config(layout="wide")
 from parser import load_multiple_files, compute_inventory_balance
 from forecast import calculate_sales_metrics, calculate_trend_and_forecast
 from ideal_stock import calculate_ideal_stock, quote_multiplicator, min_items_in_stock
+from catalog import enrich_with_prices
 
 st.title("📦 Прогноз закупок")
 
@@ -33,8 +34,8 @@ if uploaded_files:
         .sort_values("sku")
     )
 
-    tab_sales, tab_orders, tab_params = st.tabs(
-        ["Продажи и прогноз", "Склад и заказы", "Параметры"]
+    tab_sales, tab_orders, tab_params, tab_catalog = st.tabs(
+        ["Продажи и прогноз", "Склад и заказы", "Параметры", "Каталог"]
     )
 
     with tab_params:
@@ -127,3 +128,17 @@ if uploaded_files:
         ].sort_values("sku")
         order_df = order_df.loc[order_df["to_order_week"] > 0]
         st.dataframe(order_df)
+
+    with tab_catalog:
+        excel_catalog_file = st.file_uploader("Каталог Excel", type=["xlsx"])
+        if uploaded_files and excel_catalog_file:
+
+            df = load_multiple_files(uploaded_files)
+            df = compute_inventory_balance(df)
+
+            sku_df = df[["sku"]].drop_duplicates()
+
+            enriched = enrich_with_prices(sku_df, excel_catalog_file)
+
+            st.subheader("💰 Цены (Excel)")
+            st.dataframe(enriched)
