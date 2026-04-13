@@ -3,142 +3,384 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-from parser import load_multiple_files, compute_inventory_balance
-from forecast import calculate_sales_metrics, calculate_trend_and_forecast
-from ideal_stock import calculate_ideal_stock, quote_multiplicator, min_items_in_stock
-from catalog import enrich_with_prices
+from db_utils import get_parameters, get_session, get_uploaded_files, update_parameter, get_sales_data, get_all_skus
+from parser import parse_and_save_file, parse_and_save_spoils_file
+from forecast import get_forecasts
+from ideal_stock import get_ideal_stock, calculate_ideal_stock
+from supplier_service import save_supplier_file, get_suppliers, update_supplier_info
+from cache_service import invalidate_forecast_cache, invalidate_ideal_stock_cache
+from database import init_db, Sale, Spoil
+
+# Initialize database
+init_db()
 
 st.title("📦 Прогноз закупок")
 
-uploaded_files = st.file_uploader(
-    "Загрузи файлы логов",
-    type=["xlsx"],
-    accept_multiple_files=True
-)
+# Show uploaded files
+all_uploaded_files = get_uploaded_files()
+uploaded_log_files = [f for f in all_uploaded_files if not str(f[1]).startswith('spoils::')]
+uploaded_filenames = [f[1] for f in uploaded_log_files] if uploaded_log_files else []
+if all_uploaded_files:
+    with st.expander("📁 Загруженные файлы"):
+        # Compute date range for each file
+        file_data = []
+        for file_id, filename, upload_date in all_uploaded_files:
+            is_spoil_file = str(filename).startswith('spoils::')
+            display_name = str(filename).replace('spoils::', '', 1) if is_spoil_file else filename
+            source_label = "Списания" if is_spoil_file else "Логи"
+
+            session = get_session()
+            try:
+                if is_spoil_file:
+                    dates = session.query(Spoil.date).filter(Spoil.source_file_id == file_id).all()
+                else:
+                    dates = session.query(Sale.date).filter(Sale.source_file_id == file_id).all()
+                if dates:
+                    min_date = min(d.date for d in dates)
+                    max_date = max(d.date for d in dates)
+                    date_range = f"{min_date.strftime('%d.%m.%Y')} - {max_date.strftime('%d.%m.%Y')}"
+                else:
+                    date_range = "Нет данных"
+            finally:
+                session.close()
+            file_data.append([file_id, display_name, source_label, date_range])
+
+        files_df = pd.DataFrame(file_data, columns=["ID", "Название", "Тип", "Диапазон дат"])
+
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.dataframe(files_df, height=200, use_container_width=True)
+        with col2:
+            # Upload new files
+            uploaded_files = st.file_uploader(
+                "Загрузить новые файлы логов",
+                type=["xlsx"],
+                accept_multiple_files=True
+            )
+            spoils_file = st.file_uploader(
+                "Загрузить историю списаний",
+                type=["xlsx"],
+                key="spoils_file"
+            )
+else:
+    with st.expander("📁 Загрузки"):
+        # Upload new files
+        uploaded_files = st.file_uploader(
+            "Загрузить новые файлы логов",
+            type=["xlsx"],
+            accept_multiple_files=True
+        )
+        spoils_file = st.file_uploader(
+            "Загрузить историю списаний",
+            type=["xlsx"],
+            key="spoils_file"
+        )
 
 if uploaded_files:
-    df = load_multiple_files(uploaded_files)
-
-    if df.empty:
-        st.warning("Нет данных")
-        st.stop()
-
-    metrics_df, weekly_df = calculate_sales_metrics(df)
-    forecast_df = calculate_trend_and_forecast(weekly_df).sort_values("sku")
-
-    stock_df = (
-        df.sort_values("date")
-        .groupby("sku")
-        .tail(1)[["sku", "остаток на складе"]]
-        .rename(columns={"остаток на складе": "current_stock"})
-        .sort_values("sku")
-    )
-
-    tab_sales, tab_orders, tab_params, tab_catalog = st.tabs(
-        ["Продажи и прогноз", "Склад и заказы", "Параметры", "Каталог"]
-    )
-
-    with tab_params:
-        st.subheader("Параметры расчёта")
-        quote_multiplicator = st.number_input(
-            "Коэффициент запаса",
-            min_value=0.1,
-            value=float(quote_multiplicator),
-            step=0.1,
-            format="%.2f",
-        )
-        min_items_in_stock = st.number_input(
-            "Минимальное количество в запасе",
-            min_value=0,
-            value=int(min_items_in_stock),
-            step=1,
-        )
-        trend_period_months = st.number_input(
-            "Период тренда (месяцев)",
-            min_value=1,
-            max_value=12,
-            value=2,
-            step=1,
-        )
-
-        if "date" in df.columns:
-            min_date = df["date"].min()
-            max_date = df["date"].max()
-            required_start = max_date - pd.DateOffset(months=trend_period_months)
-
-            if min_date > required_start:
-                st.warning(
-                    f"В файле есть данные только с {min_date.date()} по {max_date.date()}, "
-                    f"что меньше выбранного периода тренда {trend_period_months} мес. "
-                    "Прогноз будет рассчитан, но может быть менее точным."
-                )
+    for file in uploaded_files:
+        if file.name in uploaded_filenames:
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button(f"Обновить {file.name}", key=f"update_{file.name}"):
+                    try:
+                        parse_and_save_file(file)
+                        st.success(f"Файл {file.name} обновлён")
+                        invalidate_forecast_cache()
+                        invalidate_ideal_stock_cache()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Ошибка при обновлении файла {file.name}: {str(e)}")
+            with col2:
+                st.info(f"Файл {file.name} уже загружен. Нажмите 'Обновить' для замены данных.")
         else:
-            st.warning("Не найдена колонка date для проверки периода тренда.")
+            try:
+                parse_and_save_file(file)
+                st.success(f"Файл {file.name} загружен и обработан")
+                # Invalidate caches
+                invalidate_forecast_cache()
+                invalidate_ideal_stock_cache()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка при обработке файла {file.name}: {str(e)}")
+    if any(file.name in uploaded_filenames for file in uploaded_files):
+        st.rerun()
 
-        st.write("Эти параметры применяются при расчёте `ideal_stock`.")
+if spoils_file is not None:
+    try:
+        parse_and_save_spoils_file(spoils_file)
+        invalidate_forecast_cache()
+        invalidate_ideal_stock_cache()
+        st.success(f"Файл списаний {spoils_file.name} загружен")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Ошибка при обработке файла списаний {spoils_file.name}: {str(e)}")
 
-    forecast_df = calculate_trend_and_forecast(
-        weekly_df,
-        trend_period_months=trend_period_months,
-    ).sort_values("sku")
+# Parameters (always available)
+params = get_parameters()
 
-    result = calculate_ideal_stock(
-        forecast_df,
-        stock_df,
-        sales_df=df,
-        quote_multiplicator=quote_multiplicator,
-        min_items_in_stock=min_items_in_stock,
-    )
+tab_sales, tab_orders, tab_suppliers, tab_params = st.tabs(
+    ["Продажи и прогноз", "Склад и заказы", "Поставщики", "Параметры"]
+)
+
+# Load data if we have files
+if uploaded_log_files:
+    # Get forecasts
+    trend_weeks = int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4)))
+    forecast_df = get_forecasts(trend_period_weeks=trend_weeks)
+
+    # Get current stock
+    from db_utils import get_current_stock
+    stock_df = get_current_stock()
+
+    # Calculate ideal stock
+    ideal_stock_df = get_ideal_stock()
 
     with tab_sales:
-        st.subheader("📈 Прогноз")
-        st.dataframe(forecast_df)
+        if not forecast_df.empty:
+            st.subheader("📈 Прогноз продаж")
 
-        popular_threshold = 35 * trend_period_months
-        popular = forecast_df.loc[
-            forecast_df["whole_period_sales"] >= popular_threshold,
-            ["sku", "whole_period_sales"]
-        ].sort_values("whole_period_sales", ascending=False)
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write("")
+            with col2:
+                if st.button("Обновить прогноз", key="refresh_forecast"):
+                    invalidate_forecast_cache()
+                    st.success("Кэш прогноза очищен, выполняется перерасчет")
+                    st.rerun()
 
-        if not popular.empty:
-            st.markdown(f"**Самые популярные за период (продажи >= {popular_threshold})**")
-            st.dataframe(popular)
+            st.dataframe(forecast_df)
 
-        no_demand = forecast_df.loc[
-            forecast_df["whole_period_sales"] == 0, ["sku"]
-        ].sort_values("sku")
+            # Popular items
+            if "whole_period_sales" in forecast_df.columns:
+                period_weeks = int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4)))
+                net_sales_df = get_sales_data()
+                all_skus = get_all_skus()
 
-        if not no_demand.empty:
-            st.markdown("**Не пользуются спросом**")
-            st.dataframe(no_demand)
+                if not net_sales_df.empty:
+                    net_sales_df['date'] = pd.to_datetime(net_sales_df['date'])
+                    latest_date = net_sales_df['date'].max()
+                    cutoff_date = latest_date - pd.Timedelta(weeks=max(1, period_weeks) - 1)
+                    period_net_sales = (
+                        net_sales_df.loc[net_sales_df['date'] >= cutoff_date]
+                        .groupby('sku', as_index=False)['outbound']
+                        .sum()
+                        .rename(columns={'outbound': 'net_sales_period'})
+                    )
+                else:
+                    period_net_sales = pd.DataFrame(columns=['sku', 'net_sales_period'])
+
+                period_net_sales = period_net_sales.set_index('sku') if not period_net_sales.empty else pd.DataFrame(index=[])
+                sales_map = period_net_sales['net_sales_period'].to_dict() if 'net_sales_period' in period_net_sales.columns else {}
+
+                sales_view = forecast_df[['sku', 'forecast_next_week', 'forecast_next_month']].copy()
+                sales_view['net_sales_period'] = sales_view['sku'].map(sales_map).fillna(0)
+
+                popular_threshold = st.number_input(
+                    "Порог популярности (продаж за период)",
+                    min_value=0,
+                    value=max(1, int(35 * (period_weeks / 4))),
+                    step=1
+                )
+
+                popular = sales_view.loc[
+                    sales_view["net_sales_period"] >= popular_threshold,
+                    ["sku", "net_sales_period", "forecast_next_week", "forecast_next_month"]
+                ].sort_values("net_sales_period", ascending=False)
+
+                popular = popular.rename(columns={
+                    'net_sales_period': 'sales_period'
+                })
+
+                if not popular.empty:
+                    st.subheader("🔥 Популярные товары")
+                    st.dataframe(popular)
+
+                # No demand items
+                no_demand = sales_view.loc[
+                    sales_view["net_sales_period"] == 0, ["sku"]
+                ]
+
+                # Include SKUs that are absent in forecast view but exist in catalog.
+                existing = set(no_demand['sku'])
+                for sku in all_skus:
+                    if sku not in set(sales_view['sku']) and sku not in existing:
+                        no_demand = pd.concat([no_demand, pd.DataFrame([{'sku': sku}])], ignore_index=True)
+
+                if not no_demand.empty:
+                    st.subheader("😴 Товары без спроса")
+                    st.dataframe(no_demand)
+        else:
+            st.warning("Нет данных для прогноза")
 
     with tab_orders:
-        st.subheader("🛒 Рекомендация к заказу")
-        order_df = result[
-            [
-                "sku",
-                "forecast_next_week",
-                "forecast_next_month",
-                "current_stock",
-                "ideal_stock",
-                "monthly_ideal_stock",
-                "to_order_week",
-                "to_order_month",
-            ]
-        ].sort_values("sku")
-        order_df = order_df.loc[order_df["to_order_week"] > 0]
-        st.dataframe(order_df)
+        if not ideal_stock_df.empty:
+            st.subheader("📦 Заказы")
 
-    with tab_catalog:
-        excel_catalog_file = st.file_uploader("Каталог Excel", type=["xlsx"])
-        if uploaded_files and excel_catalog_file:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write("")
+            with col2:
+                if st.button("Обновить заказы", key="refresh_orders"):
+                    invalidate_ideal_stock_cache()
+                    st.success("Кэш заказов очищен, выполняется перерасчет")
+                    st.rerun()
 
-            df = load_multiple_files(uploaded_files)
-            df = compute_inventory_balance(df)
+            order_df = ideal_stock_df.loc[ideal_stock_df["to_order_week"] > 0]
+            if not order_df.empty:
+                def highlight_row(row):
+                    if row['current_stock'] == 0:
+                        return ['background-color: rgba(255, 0, 0, 0.3)'] * len(row)
+                    if row['current_stock'] <= row['monthly_ideal_stock'] / 8:
+                        return ['background-color: rgba(255, 0, 0, 0.3)'] * len(row)
+                    if row['current_stock'] <= row['monthly_ideal_stock'] / 4:
+                        return ['background-color: rgba(255, 255, 0, 0.3)'] * len(row)
+                    return [''] * len(row)
 
-            sku_df = df[["sku"]].drop_duplicates()
+                styled_df = order_df[[
+                    "sku",
+                    "current_stock",
+                    "monthly_ideal_stock",
+                    "to_order_month"
+                ]].style.apply(highlight_row, axis=1)
 
-            enriched = enrich_with_prices(sku_df, excel_catalog_file)
+                st.dataframe(styled_df)
+            else:
+                st.info("Нет товаров для заказа на эту неделю")
+        else:
+            st.warning("Нет данных об остатках")
 
-            st.subheader("💰 Цены (Excel)")
-            st.dataframe(enriched)
+    with tab_suppliers:
+        st.subheader("🧾 Поставщики")
+
+        supplier_file = st.file_uploader(
+            "Загрузить файл поставщиков",
+            type=["xlsx"],
+            key="supplier_file"
+        )
+
+        if supplier_file is not None:
+            try:
+                save_supplier_file(supplier_file)
+                st.success("Файл поставщиков загружен и обработан")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка при обработке файла поставщиков: {str(e)}")
+
+        suppliers_df = get_suppliers()
+        if not suppliers_df.empty:
+            display_df = suppliers_df[[
+                'name',
+                'delivery_cost',
+                'delivery_time',
+                'min_order'
+            ]].rename(columns={
+                'name': 'Название',
+                'delivery_cost': 'Стоимость доставки',
+                'delivery_time': 'Срок доставки',
+                'min_order': 'Минимальный заказ'
+            })
+
+            edited = st.data_editor(
+                display_df,
+                num_rows='fixed',
+                use_container_width=True,
+                column_config={
+                    'Название': st.column_config.Column(disabled=True)
+                }
+            )
+
+            # Check for changes and highlight in editor
+            original_values = display_df.set_index('Название')
+            edited_values = edited.set_index('Название')
+            changes = {}
+            for name in original_values.index:
+                if name in edited_values.index:
+                    orig_row = original_values.loc[name]
+                    edit_row = edited_values.loc[name]
+                    changed_cols = []
+                    for col in ['Стоимость доставки', 'Срок доставки', 'Минимальный заказ']:
+                        if orig_row[col] != edit_row[col]:
+                            changed_cols.append(col)
+                    if changed_cols:
+                        changes[name] = changed_cols
+
+            if changes:
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button('Сохранить изменения'):
+                        edited = edited.rename(columns={
+                            'Название': 'name',
+                            'Стоимость доставки': 'delivery_cost',
+                            'Срок доставки': 'delivery_time',
+                            'Минимальный заказ': 'min_order'
+                        })
+                        for _, row in edited.iterrows():
+                            update_supplier_info(
+                                row['name'],
+                                row['delivery_cost'],
+                                row['delivery_time'],
+                                row['min_order']
+                            )
+                        st.success('Изменения поставщиков сохранены')
+                        st.rerun()
+                with col2:
+                    if st.button('Отменить изменения'):
+                        st.rerun()
+            else:
+                if st.button('Сохранить изменения поставщиков'):
+                    st.info('Нет изменений для сохранения')
+        else:
+            st.info("Нет данных по поставщикам")
+
+else:
+    with tab_sales:
+        st.info("Загрузите файлы логов для просмотра прогнозов")
+    
+    with tab_orders:
+        st.info("Загрузите файлы логов для просмотра заказов")
+    with tab_suppliers:
+        st.subheader("🧾 Поставщики")
+        supplier_file = st.file_uploader(
+            "Загрузить файл поставщиков",
+            type=["xlsx"],
+            key="supplier_file"
+        )
+        if supplier_file is not None:
+            try:
+                save_supplier_file(supplier_file)
+                st.success("Файл поставщиков загружен и обработан")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка при обработке файла поставщиков: {str(e)}")
+
+with tab_params:
+    st.subheader("Параметры расчёта")
+    new_quote = st.number_input(
+        "Коэффициент запаса",
+        min_value=0.1,
+        value=float(params.get('quote_multiplicator', 1.5)),
+        step=0.1,
+        format="%.2f",
+    )
+    new_min_stock = st.number_input(
+        "Минимальный запас на складе",
+        min_value=0,
+        value=int(params.get('min_items_in_stock', 5)),
+        step=1
+    )
+    new_trend_period = st.number_input(
+        "Период для расчёта тренда (недели)",
+        min_value=1,
+        value=int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4))),
+        step=1
+    )
+
+    if st.button("Сохранить параметры"):
+        update_parameter('quote_multiplicator', new_quote)
+        update_parameter('min_items_in_stock', new_min_stock)
+        update_parameter('trend_period_weeks', new_trend_period)
+        invalidate_forecast_cache()
+        invalidate_ideal_stock_cache()
+        st.success("Параметры сохранены")
+        st.rerun()

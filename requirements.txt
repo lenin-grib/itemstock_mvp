@@ -3,3 +3,6 @@ streamlit
 openpyxl
 numpy
 rapidfuzz
+sqlalchemy
+database
+datetime

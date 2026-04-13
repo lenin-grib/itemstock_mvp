@@ -1,6 +1,7 @@
 import pandas as pd
 import re
 from datetime import datetime
+from db_utils import save_parsed_data, save_spoils_data
 
 
 def load_multiple_files(uploaded_files):
@@ -27,6 +28,46 @@ def load_multiple_files(uploaded_files):
     )
 
     return result
+
+
+def parse_and_save_file(file):
+    """
+    Парсит файл и сохраняет данные в БД
+    """
+    df = parse_single_file(file)
+    filename = getattr(file, "name", "unknown")
+    save_parsed_data(df, filename)
+
+
+def parse_and_save_spoils_file(file):
+    """
+    Парсит файл списаний и сохраняет данные в БД.
+    Формат: header=row 2, дата=A, товар=E, количество=F, причина=H.
+    """
+    df = pd.read_excel(file, header=1)
+    if df.empty:
+        raise ValueError("Файл списаний пуст")
+
+    required_idx = [0, 4, 5, 7]
+    if max(required_idx) >= len(df.columns):
+        raise ValueError("Файл списаний не содержит ожидаемых колонок A, E, F, H")
+
+    spoils_df = pd.DataFrame({
+        'date': pd.to_datetime(df.iloc[:, 0], dayfirst=True, errors='coerce').dt.normalize(),
+        'sku': df.iloc[:, 4].astype(str).str.strip(),
+        'quantity': pd.to_numeric(df.iloc[:, 5], errors='coerce').fillna(0.0),
+        'reason': df.iloc[:, 7].fillna('').astype(str).str.strip(),
+    })
+
+    spoils_df = spoils_df.dropna(subset=['date'])
+    spoils_df = spoils_df[spoils_df['sku'] != '']
+    spoils_df = spoils_df[spoils_df['quantity'] > 0]
+
+    if spoils_df.empty:
+        raise ValueError("В файле списаний нет валидных записей")
+
+    filename = getattr(file, 'name', 'unknown_spoils_file')
+    save_spoils_data(spoils_df, filename)
 
 
 def parse_single_file(file):

@@ -1,3 +1,4 @@
+# НЕ использоуется
 from rapidfuzz import process, fuzz
 import pandas as pd
 from utils import normalize, extract_brand, transliterate_cyrillic_to_latin
