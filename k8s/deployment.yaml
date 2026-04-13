@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: itemstock
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: itemstock-config
+  namespace: itemstock
+data:
+  STREAMLIT_SERVER_PORT: "8501"
+  STREAMLIT_SERVER_ADDRESS: "0.0.0.0"
+  STREAMLIT_SERVER_HEADLESS: "true"
+  STREAMLIT_CLIENT_SHOWERRORDETAILS: "true"
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: itemstock-data
+  namespace: itemstock
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: microk8s-hostpath
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: itemstock-app
+  namespace: itemstock
+  labels:
+    app: itemstock
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: itemstock
+  template:
+    metadata:
+      labels:
+        app: itemstock
+    spec:
+      containers:
+      - name: itemstock
+        image: itemstock:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8501
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: itemstock-config
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: itemstock-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: itemstock-service
+  namespace: itemstock
+  labels:
+    app: itemstock
+spec:
+  type: LoadBalancer
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
+  selector:
+    app: itemstock
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: itemstock-ingress
+  namespace: itemstock
+  annotations:
+    kubernetes.io/ingress.class: public
+spec:
+  rules:
+  - host: itemstock.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: itemstock-service
+            port:
+              number: 80

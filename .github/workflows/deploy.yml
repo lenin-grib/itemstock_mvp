@@ -1,0 +1,104 @@
+name: Build and Deploy to microk8s
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to microk8s
+        env:
+          MICROK8S_HOST: ${{ secrets.MICROK8S_HOST }}
+          MICROK8S_USER: ${{ secrets.MICROK8S_USER }}
+          MICROK8S_KEY: ${{ secrets.MICROK8S_KEY }}
+          MICROK8S_KUBECONFIG: ${{ secrets.MICROK8S_KUBECONFIG }}
+          IMAGE_TAG: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          # Create SSH key
+          mkdir -p ~/.ssh
+          echo "$MICROK8S_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$MICROK8S_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          # Create kubeconfig
+          mkdir -p ~/.kube
+          echo "$MICROK8S_KUBECONFIG" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+          # Update deployment with new image
+          ssh "$MICROK8S_USER@$MICROK8S_HOST" << 'EOF'
+            export KUBECONFIG=~/.kube/config
+            
+            # Set namespace
+            NAMESPACE="itemstock"
+            DEPLOYMENT="itemstock-app"
+            
+            # Create namespace if not exists
+            kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+            
+            # Update image in deployment
+            kubectl set image deployment/$DEPLOYMENT \
+              itemstock=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BRANCH }}-${{ env.IMAGE_TAG }} \
+              -n $NAMESPACE
+            
+            # Wait for rollout
+            kubectl rollout status deployment/$DEPLOYMENT -n $NAMESPACE --timeout=5m
+          EOF
