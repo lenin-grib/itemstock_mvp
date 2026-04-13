@@ -1,0 +1,17 @@
+.git
+.gitignore
+.github
+.dockerignore
+.DS_Store
+*.pyc
+__pycache__
+*.egg-info
+.pytest_cache
+.venv
+venv
+env
+.vscode
+.idea
+*.log
+data/
+.streamlit/
