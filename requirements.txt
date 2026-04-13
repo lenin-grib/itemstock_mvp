@@ -3,4 +3,3 @@ streamlit
 openpyxl
 numpy
 rapidfuzz
-re
