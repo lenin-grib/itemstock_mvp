@@ -2,6 +2,7 @@ import pandas as pd
 import re
 from datetime import datetime
 from db_utils import save_parsed_data, save_spoils_data
+from supplier_service import save_price_list_file
 
 
 def load_multiple_files(uploaded_files):
@@ -68,6 +69,11 @@ def parse_and_save_spoils_file(file):
 
     filename = getattr(file, 'name', 'unknown_spoils_file')
     save_spoils_data(spoils_df, filename)
+
+
+def parse_and_save_price_list_file(file):
+    """Parses and saves price-list file via supplier service."""
+    save_price_list_file(file)
 
 
 def parse_single_file(file):

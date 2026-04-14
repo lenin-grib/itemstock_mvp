@@ -4,7 +4,7 @@ import streamlit as st
 st.set_page_config(layout="wide")
 
 from db_utils import get_parameters, get_uploaded_files, update_parameter, get_all_skus
-from parser import parse_and_save_file, parse_and_save_spoils_file
+from parser import parse_and_save_file, parse_and_save_spoils_file, parse_and_save_price_list_file
 from forecast import get_forecasts
 from ideal_stock import get_ideal_stock, calculate_ideal_stock
 from supplier_service import save_supplier_file, get_suppliers, update_supplier_info
@@ -18,89 +18,67 @@ st.title("📦 Прогноз закупок")
 
 # Show uploaded files
 all_uploaded_files = get_uploaded_files()
-uploaded_log_files = [f for f in all_uploaded_files if not str(f[1]).startswith('spoils::')]
+
+
+def _normalize_uploaded_file_row(row):
+    """Supports both legacy 5-field and new 6-field tuple formats."""
+    if len(row) == 6:
+        file_id, filename, file_type, upload_date, date_from, date_to = row
+        return file_id, filename, (file_type or 'logs'), upload_date, date_from, date_to
+    if len(row) == 5:
+        file_id, filename, upload_date, date_from, date_to = row
+        return file_id, filename, 'logs', upload_date, date_from, date_to
+    raise ValueError(f"Unexpected uploaded file row format: {row}")
+
+
+normalized_uploaded_files = [_normalize_uploaded_file_row(r) for r in all_uploaded_files]
+uploaded_log_files = [
+    f for f in normalized_uploaded_files
+    if str(f[2] or 'logs') == 'logs'
+]
 uploaded_filenames = [f[1] for f in uploaded_log_files] if uploaded_log_files else []
+
+
+def _file_type_and_name(file_type, raw_filename):
+    # Backward-compatible display: strip legacy prefixes if they are present in old rows.
+    display_name = str(raw_filename)
+    for prefix in ('spoils::', 'price::', 'suppliers::'):
+        if display_name.startswith(prefix):
+            display_name = display_name.replace(prefix, '', 1)
+            break
+
+    mapped = {
+        'spoils': 'Списания',
+        'price': 'Прайс-лист',
+        'suppliers': 'Поставщики',
+        'logs': 'Логи',
+    }
+    return mapped.get(str(file_type or 'logs'), 'Логи'), display_name
+
+
+def _format_file_date_range(file_type, upload_date, date_from, date_to):
+    if file_type in ("Прайс-лист", "Поставщики"):
+        if upload_date:
+            return upload_date.strftime('%d.%m.%Y')
+        return "Нет данных"
+
+    if date_from and date_to:
+        return f"{date_from.strftime('%d.%m.%Y')} - {date_to.strftime('%d.%m.%Y')}"
+    return "Нет данных"
 if all_uploaded_files:
     with st.expander("📁 Загруженные файлы"):
-        # Compute date range for each file
         file_data = []
-        for file_id, filename, upload_date, date_from, date_to in all_uploaded_files:
-            is_spoil_file = str(filename).startswith('spoils::')
-            display_name = str(filename).replace('spoils::', '', 1) if is_spoil_file else filename
-            source_label = "Списания" if is_spoil_file else "Логи"
-
-            if date_from and date_to:
-                date_range = f"{date_from.strftime('%d.%m.%Y')} - {date_to.strftime('%d.%m.%Y')}"
-            else:
-                date_range = "Нет данных"
+        for file_id, filename, file_type, upload_date, date_from, date_to in normalized_uploaded_files:
+            source_label, display_name = _file_type_and_name(file_type, filename)
+            date_range = _format_file_date_range(source_label, upload_date, date_from, date_to)
             file_data.append([file_id, display_name, source_label, date_range])
 
         files_df = pd.DataFrame(file_data, columns=["ID", "Название", "Тип", "Диапазон дат"])
 
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.dataframe(files_df, height=200, width='stretch')
-        with col2:
-            # Upload new files
-            uploaded_files = st.file_uploader(
-                "Загрузить новые файлы логов",
-                type=["xlsx"],
-                accept_multiple_files=True
-            )
-            spoils_file = st.file_uploader(
-                "Загрузить историю списаний",
-                type=["xlsx"],
-                key="spoils_file"
-            )
+        st.dataframe(files_df, height=200, width='stretch')
 else:
     with st.expander("📁 Загрузки"):
-        # Upload new files
-        uploaded_files = st.file_uploader(
-            "Загрузить новые файлы логов",
-            type=["xlsx"],
-            accept_multiple_files=True
-        )
-        spoils_file = st.file_uploader(
-            "Загрузить историю списаний",
-            type=["xlsx"],
-            key="spoils_file"
-        )
-
-if uploaded_files:
-    for file in uploaded_files:
-        if file.name in uploaded_filenames:
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button(f"Обновить {file.name}", key=f"update_{file.name}"):
-                    try:
-                        parse_and_save_file(file)
-                        invalidate_forecast_cache()
-                        invalidate_ideal_stock_cache()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Ошибка при обновлении файла {file.name}: {str(e)}")
-            with col2:
-                st.info(f"Файл {file.name} уже загружен. Нажмите 'Обновить' для замены данных.")
-        else:
-            try:
-                parse_and_save_file(file)
-                # Invalidate caches
-                invalidate_forecast_cache()
-                invalidate_ideal_stock_cache()
-                st.rerun()
-            except Exception as e:
-                st.error(f"Ошибка при обработке файла {file.name}: {str(e)}")
-    if any(file.name in uploaded_filenames for file in uploaded_files):
-        st.rerun()
-
-if spoils_file is not None:
-    try:
-        parse_and_save_spoils_file(spoils_file)
-        invalidate_forecast_cache()
-        invalidate_ideal_stock_cache()
-        st.rerun()
-    except Exception as e:
-        st.error(f"Ошибка при обработке файла списаний {spoils_file.name}: {str(e)}")
+        st.info("Загрузите файлы в соответствующих вкладках")
 
 # Parameters (always available)
 params = get_parameters()
@@ -121,6 +99,56 @@ stock_df = get_current_stock()
 ideal_stock_df = get_ideal_stock()
 
 with tab_sales:
+    st.subheader("📥 Загрузка логов и списаний")
+    uploaded_files = st.file_uploader(
+        "Загрузить новые файлы логов",
+        type=["xlsx"],
+        accept_multiple_files=True,
+        key="logs_uploader"
+    )
+    spoils_file = st.file_uploader(
+        "Загрузить историю списаний",
+        type=["xlsx"],
+        key="spoils_file"
+    )
+
+    if uploaded_files:
+        for file in uploaded_files:
+            if file.name in uploaded_filenames:
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button(f"Обновить {file.name}", key=f"update_{file.name}"):
+                        try:
+                            parse_and_save_file(file)
+                            invalidate_forecast_cache()
+                            invalidate_ideal_stock_cache()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Ошибка при обновлении файла {file.name}: {str(e)}")
+                with col2:
+                    st.info(f"Файл {file.name} уже загружен. Нажмите 'Обновить' для замены данных.")
+            else:
+                try:
+                    parse_and_save_file(file)
+                    invalidate_forecast_cache()
+                    invalidate_ideal_stock_cache()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Ошибка при обработке файла {file.name}: {str(e)}")
+        if any(file.name in uploaded_filenames for file in uploaded_files):
+            st.rerun()
+
+    if spoils_file is not None:
+        try:
+            parse_and_save_spoils_file(spoils_file)
+            invalidate_forecast_cache()
+            invalidate_ideal_stock_cache()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Ошибка при обработке файла списаний {spoils_file.name}: {str(e)}")
+
+    st.divider()
+
     if not forecast_df.empty:
             st.subheader("📈 Прогноз продаж")
 
@@ -185,6 +213,22 @@ with tab_sales:
         st.warning("Нет данных для прогноза")
 
 with tab_orders:
+    st.subheader("📥 Загрузка прайс-листа")
+    price_list_file = st.file_uploader(
+        "Загрузить прайс-лист товаров",
+        type=["xlsx"],
+        key="price_list_file"
+    )
+
+    if price_list_file is not None:
+        try:
+            parse_and_save_price_list_file(price_list_file)
+            st.rerun()
+        except Exception as e:
+            st.error(f"Ошибка при обработке прайс-листа {price_list_file.name}: {str(e)}")
+
+    st.divider()
+
     if not ideal_stock_df.empty:
             st.subheader("📦 Заказы")
 

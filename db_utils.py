@@ -10,7 +10,7 @@ def get_uploaded_files():
     session = get_session()
     try:
         files = session.query(UploadedFile).all()
-        return [(f.id, f.filename, f.upload_date, f.date_from, f.date_to) for f in files]
+        return [(f.id, f.filename, f.file_type, f.upload_date, f.date_from, f.date_to) for f in files]
     finally:
         session.close()
 
@@ -66,6 +66,7 @@ def save_parsed_data(df, filename):
             session.query(Sale).filter_by(source_file_id=existing_file.id).delete()
             session.query(Supply).filter_by(source_file_id=existing_file.id).delete()
             session.query(Balance).filter_by(source_file_id=existing_file.id).delete()
+            existing_file.file_type = 'logs'
             existing_file.upload_date = datetime.now()
             existing_file.date_from = file_first_date
             existing_file.date_to = file_last_date
@@ -73,6 +74,7 @@ def save_parsed_data(df, filename):
         else:
             uploaded_file = UploadedFile(
                 filename=filename,
+                file_type='logs',
                 upload_date=datetime.now(),
                 date_from=file_first_date,
                 date_to=file_last_date,
@@ -167,6 +169,7 @@ def save_spoils_data(df, filename):
         existing_file = session.query(UploadedFile).filter_by(filename=spoils_filename).first()
         if existing_file:
             session.query(Spoil).filter_by(source_file_id=existing_file.id).delete()
+            existing_file.file_type = 'spoils'
             existing_file.upload_date = datetime.now()
             existing_file.date_from = file_first_date
             existing_file.date_to = file_last_date
@@ -174,6 +177,7 @@ def save_spoils_data(df, filename):
         else:
             uploaded_file = UploadedFile(
                 filename=spoils_filename,
+                file_type='spoils',
                 upload_date=datetime.now(),
                 date_from=file_first_date,
                 date_to=file_last_date,

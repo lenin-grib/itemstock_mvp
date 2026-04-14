@@ -1,115 +1,199 @@
+from datetime import datetime
+
 import pandas as pd
+
 from db_utils import get_session
-from database import Supplier, SupplierItem, ApproximatePrice
-from utils import normalize
+from database import (
+    ApproximatePrice,
+    PriceListItem,
+    Product,
+    Supplier,
+    SupplierItem,
+    UploadedFile,
+)
+
+
+def _upsert_uploaded_file(session, filename, file_type, date_from=None, date_to=None):
+    existing = session.query(UploadedFile).filter_by(filename=filename).first()
+    if existing:
+        existing.file_type = file_type
+        existing.upload_date = datetime.now()
+        existing.date_from = date_from
+        existing.date_to = date_to
+        return existing
+
+    uploaded = UploadedFile(
+        filename=filename,
+        file_type=file_type,
+        upload_date=datetime.now(),
+        date_from=date_from,
+        date_to=date_to,
+    )
+    session.add(uploaded)
+    session.flush()
+    return uploaded
 
 
 def save_supplier_file(file):
     """
-    Parse and save supplier data from Excel file.
-    Updates suppliers and their items, then updates approximate prices.
+    Parse and save suppliers from a single-sheet file with supplier metadata only.
+    Required columns:
+      поставщик, контакт, срок доставки, цена доставки, минимальный заказ
+    Also stores file record in uploaded_files with upload date as date range.
     """
-    xls = pd.read_excel(file, sheet_name=None)
-    if not xls:
+    df = pd.read_excel(file)
+    if df.empty:
         raise ValueError("Файл поставщиков пуст")
 
-    first_sheet = next(iter(xls.values()))
-    meta_df = first_sheet.copy()
-    meta_df.columns = [str(col).strip().lower() for col in meta_df.columns]
+    df.columns = [str(col).strip().lower() for col in df.columns]
     required_cols = ['поставщик', 'контакт', 'срок доставки', 'цена доставки', 'минимальный заказ']
     for col in required_cols:
-        if col not in meta_df.columns:
+        if col not in df.columns:
             raise ValueError(f"В файле поставщиков не найдена колонка: {col}")
 
     session = get_session()
     try:
-        suppliers = {}
-        for _, row in meta_df.iterrows():
+        now_date = datetime.now().date()
+        filename = f"suppliers::{getattr(file, 'name', 'unknown_suppliers_file')}"
+        _upsert_uploaded_file(session, filename, file_type='suppliers', date_from=now_date, date_to=now_date)
+
+        for _, row in df.iterrows():
             name = str(row.get('поставщик', '')).strip()
             if not name:
                 continue
+
             contact = str(row.get('контакт', '')).strip()
             delivery_time = str(row.get('срок доставки', '')).strip()
-            delivery_cost = row.get('цена доставки', 0) or 0
-            min_order = row.get('минимальный заказ', 0) or 0
+            delivery_cost = float(row.get('цена доставки', 0) or 0)
+            min_order = float(row.get('минимальный заказ', 0) or 0)
 
             supplier = session.query(Supplier).filter_by(name=name).first()
             if not supplier:
                 supplier = Supplier(
                     name=name,
                     contact=contact,
-                    delivery_cost=float(delivery_cost),
+                    delivery_cost=delivery_cost,
                     delivery_time=delivery_time,
-                    min_order=float(min_order)
+                    min_order=min_order,
                 )
                 session.add(supplier)
-                session.flush()
             else:
                 supplier.contact = contact
-                supplier.delivery_cost = float(delivery_cost)
+                supplier.delivery_cost = delivery_cost
                 supplier.delivery_time = delivery_time
-                supplier.min_order = float(min_order)
+                supplier.min_order = min_order
 
+        session.commit()
+    finally:
+        session.close()
+
+
+def save_price_list_file(file):
+    """
+    Parse and save price-list file.
+    Structure:
+      first 2 rows are header,
+      B товар, E цена продажи, F цена закупки, G скидка, H упаковка, J поставщик
+    Stores file in uploaded_files and updates suppliers/price_list_items/approximate_prices.
+    """
+    raw = pd.read_excel(file, header=None)
+    if raw.empty or len(raw.index) <= 2:
+        raise ValueError("Файл прайс-листа пуст или не содержит данных")
+
+    # Required columns by index: B(1), E(4), F(5), G(6), H(7), J(9).
+    # Extra columns are ignored.
+    required_max_col = 9
+    if raw.shape[1] <= required_max_col:
+        raise ValueError("В прайс-листе не хватает обязательных колонок B, E, F, G, H, J")
+
+    data = raw.iloc[2:, [1, 4, 5, 6, 7, 9]].copy()
+    data.columns = ['sku', 'sale_price', 'purchase_price', 'discount', 'packaging', 'supplier_name']
+
+    data['sku'] = data['sku'].fillna('').astype(str).str.strip()
+    data['supplier_name'] = data['supplier_name'].fillna('').astype(str).str.strip()
+    data['packaging'] = data['packaging'].fillna('').astype(str).str.strip()
+    data['sale_price'] = pd.to_numeric(data['sale_price'], errors='coerce')
+    data['purchase_price'] = pd.to_numeric(data['purchase_price'], errors='coerce')
+    data['discount'] = pd.to_numeric(data['discount'], errors='coerce').fillna(0.0)
+
+    data = data[(data['sku'] != '') & (data['supplier_name'] != '')]
+    if data.empty:
+        raise ValueError("В прайс-листе нет валидных строк")
+
+    session = get_session()
+    try:
+        now_date = datetime.now().date()
+        filename = f"price::{getattr(file, 'name', 'unknown_price_file')}"
+        uploaded_file = _upsert_uploaded_file(session, filename, file_type='price', date_from=now_date, date_to=now_date)
+
+        # Keep products aligned with main product list from logs.
+        product_map = {p.sku: p.id for p in session.query(Product).all()}
+        data = data[data['sku'].isin(product_map.keys())].copy()
+        if data.empty:
+            raise ValueError("В прайс-листе нет товаров из основного списка (логов)")
+
+        # Ensure all suppliers from price list exist.
+        suppliers = {}
+        for name in sorted(set(data['supplier_name'])):
+            supplier = session.query(Supplier).filter_by(name=name).first()
+            if not supplier:
+                supplier = Supplier(name=name)
+                session.add(supplier)
+                session.flush()
             suppliers[name] = supplier
 
-        session.commit()
+        # If file is replaced, remove previous records from same file source.
+        session.query(PriceListItem).filter_by(source_file_id=uploaded_file.id).delete()
 
-        # Clear supplier items for all suppliers in this file
-        for supplier in suppliers.values():
-            session.query(SupplierItem).filter_by(supplier_id=supplier.id).delete()
-        session.commit()
+        for _, row in data.iterrows():
+            product_id = product_map[row['sku']]
+            supplier = suppliers[row['supplier_name']]
 
-        # Parse price lists from subsequent sheets
-        for sheet_name, sheet in list(xls.items())[1:]:
-            if sheet.empty:
-                continue
-            sheet_name_lower = sheet_name.strip().lower()
-            supplier = None
-            for name, sup in suppliers.items():
-                normalized_name = normalize(name)
-                if normalized_name == sheet_name_lower or normalized_name in sheet_name_lower or sheet_name_lower in normalized_name:
-                    supplier = sup
-                    break
-            if supplier is None:
-                continue
+            existing = session.query(PriceListItem).filter_by(
+                product_id=product_id,
+                supplier_id=supplier.id,
+            ).first()
 
-            items_df = sheet.copy()
-            items_df.columns = [str(col).strip().lower() for col in items_df.columns]
-            if 'товар' not in items_df.columns or 'цена' not in items_df.columns:
-                continue
+            sale_price = None if pd.isna(row['sale_price']) else float(row['sale_price'])
+            purchase_price = None if pd.isna(row['purchase_price']) else float(row['purchase_price'])
+            discount = None if pd.isna(row['discount']) else float(row['discount'])
 
-            for _, item_row in items_df.iterrows():
-                sku = str(item_row.get('товар', '')).strip()
-                if not sku:
-                    continue
-                price = item_row.get('цена', 0) or 0
-                packaging = str(item_row.get('упаковка', '')).strip()
-
-                supplier_item = SupplierItem(
-                    supplier_id=supplier.id,
-                    sku=sku,
-                    price=float(price),
-                    packaging=packaging
+            if existing:
+                existing.sale_price = sale_price
+                existing.purchase_price = purchase_price
+                existing.discount = discount
+                existing.packaging = row['packaging']
+                existing.source_file_id = uploaded_file.id
+            else:
+                session.add(
+                    PriceListItem(
+                        product_id=product_id,
+                        supplier_id=supplier.id,
+                        sale_price=sale_price,
+                        purchase_price=purchase_price,
+                        discount=discount,
+                        packaging=row['packaging'],
+                        source_file_id=uploaded_file.id,
+                    )
                 )
-                session.add(supplier_item)
 
-        session.commit()
-
-        # Update approximate prices from supplier items
+        # Rebuild approximate prices from minimum purchase price.
         session.query(ApproximatePrice).delete()
+        min_prices = (
+            session.query(Product.sku, PriceListItem.purchase_price)
+            .join(PriceListItem, PriceListItem.product_id == Product.id)
+            .filter(PriceListItem.purchase_price.isnot(None))
+            .all()
+        )
+        best = {}
+        for sku, price in min_prices:
+            if sku not in best or price < best[sku]:
+                best[sku] = float(price)
+
+        for sku, price in best.items():
+            session.add(ApproximatePrice(sku=sku, price=price))
+
         session.commit()
-
-        price_map = {}
-        for sku, price in session.query(SupplierItem.sku, SupplierItem.price).all():
-            if sku not in price_map or price < price_map[sku]:
-                price_map[sku] = price
-
-        for sku, price in price_map.items():
-            approx = ApproximatePrice(sku=sku, price=price)
-            session.add(approx)
-
-        session.commit()
-
     finally:
         session.close()
 
@@ -124,7 +208,7 @@ def get_suppliers():
         suppliers = session.query(Supplier).all()
         data = []
         for supplier in suppliers:
-            item_count = session.query(SupplierItem).filter_by(supplier_id=supplier.id).count()
+            item_count = session.query(PriceListItem).filter_by(supplier_id=supplier.id).count()
             data.append({
                 'name': supplier.name,
                 'delivery_cost': supplier.delivery_cost,

@@ -16,6 +16,7 @@ class UploadedFile(Base):
     __tablename__ = 'uploaded_files'
     id = Column(Integer, primary_key=True)
     filename = Column(String, unique=True, nullable=False)
+    file_type = Column(String, default='logs', nullable=False)
     upload_date = Column(DateTime, default=None)
     date_from = Column(Date, nullable=True)
     date_to = Column(Date, nullable=True)
@@ -123,6 +124,28 @@ class SupplierItem(Base):
         Index('idx_supplier_item_supplier', 'supplier_id'),
     )
 
+class PriceListItem(Base):
+    __tablename__ = 'price_list_items'
+    id = Column(Integer, primary_key=True)
+    product_id = Column(Integer, ForeignKey('products.id'), nullable=False)
+    supplier_id = Column(Integer, ForeignKey('suppliers.id'), nullable=False)
+    sale_price = Column(Float)
+    purchase_price = Column(Float)
+    discount = Column(Float)
+    packaging = Column(String)
+    source_file_id = Column(Integer, ForeignKey('uploaded_files.id'))
+
+    product = relationship("Product")
+    supplier = relationship("Supplier")
+    source_file = relationship("UploadedFile")
+
+    __table_args__ = (
+        UniqueConstraint('product_id', 'supplier_id', name='unique_price_list_product_supplier'),
+        Index('idx_price_list_product', 'product_id'),
+        Index('idx_price_list_supplier', 'supplier_id'),
+        Index('idx_price_list_source_file', 'source_file_id'),
+    )
+
 class NetSale(Base):
     """Pre-computed net sales: outbound minus spoils, per product per day."""
     __tablename__ = 'net_sales'
@@ -190,6 +213,12 @@ def init_db():
             session.execute(text("ALTER TABLE uploaded_files ADD COLUMN date_from DATE"))
         if 'date_to' not in existing_cols:
             session.execute(text("ALTER TABLE uploaded_files ADD COLUMN date_to DATE"))
+        if 'file_type' not in existing_cols:
+            session.execute(text("ALTER TABLE uploaded_files ADD COLUMN file_type TEXT"))
+            session.execute(text("UPDATE uploaded_files SET file_type='spoils' WHERE filename LIKE 'spoils::%'"))
+            session.execute(text("UPDATE uploaded_files SET file_type='price' WHERE filename LIKE 'price::%'"))
+            session.execute(text("UPDATE uploaded_files SET file_type='suppliers' WHERE filename LIKE 'suppliers::%'"))
+            session.execute(text("UPDATE uploaded_files SET file_type='logs' WHERE file_type IS NULL OR file_type = ''"))
 
         params = [
             ('quote_multiplicator', 1.5, 'Коэффициент запаса'),
