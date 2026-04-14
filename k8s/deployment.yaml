@@ -25,15 +25,15 @@ spec:
             - containerPort: 8501
           readinessProbe:
             httpGet:
-              path: /
+              path: /_stcore/health
               port: 8501
-            initialDelaySeconds: 60
-            periodSeconds: 15
+            initialDelaySeconds: 20
+            periodSeconds: 10
             failureThreshold: 6
           livenessProbe:
             httpGet:
-              path: /
+              path: /_stcore/health
               port: 8501
-            initialDelaySeconds: 90
-            periodSeconds: 30
+            initialDelaySeconds: 40
+            periodSeconds: 20
             failureThreshold: 3
