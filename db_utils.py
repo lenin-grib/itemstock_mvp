@@ -385,7 +385,7 @@ def get_current_stock():
         ).join(Product, subquery.c.product_id == Product.id).filter(subquery.c.rn == 1).all()
 
         data = [{'sku': sku, 'current_stock': balance} for _, balance, sku in query]
-        return pd.DataFrame(data)
+        return pd.DataFrame(data) if data else pd.DataFrame(columns=['sku', 'current_stock'])
     finally:
         session.close()
 

@@ -44,6 +44,10 @@ def calculate_ideal_stock(
     if stock_df is None:
         stock_df = get_current_stock()
 
+    # Ensure stock_df always has the required columns even when empty
+    if 'sku' not in stock_df.columns:
+        stock_df = pd.DataFrame(columns=['sku', 'current_stock'])
+
     if quote_multiplicator is None or min_items_in_stock is None:
         quote_multiplicator = params.get('quote_multiplicator', 1.5)
         min_items_in_stock = params.get('min_items_in_stock', 5)
