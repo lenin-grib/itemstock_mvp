@@ -131,14 +131,38 @@ tab_sales, tab_orders, tab_suppliers, tab_params = st.tabs(
 
 # Load data for tabs (always render tabs, even right after uploads/reruns)
 trend_weeks = int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4)))
-forecast_df = get_forecasts(trend_period_weeks=trend_weeks)
+
+_FORECAST_COLS = [
+    'sku', 'whole_period_sales',
+    'sales_last_week', 'sales_last_2w', 'sales_last_3w', 'sales_last_month',
+    'trend_coef', 'forecast_next_week', 'forecast_2w', 'forecast_3w', 'forecast_next_month',
+]
+_IDEAL_STOCK_COLS = [
+    'sku', 'current_stock',
+    'ideal_stock', 'ideal_stock_2w', 'ideal_stock_3w', 'monthly_ideal_stock',
+    'to_order_week', 'to_order_2w', 'to_order_3w', 'to_order_month',
+]
+
+try:
+    forecast_df = get_forecasts(trend_period_weeks=trend_weeks)
+except Exception as _exc:
+    st.error(f"Ошибка при загрузке прогнозов: {_exc}")
+    forecast_df = pd.DataFrame(columns=_FORECAST_COLS)
 
 # Get current stock
 from db_utils import get_current_stock
-stock_df = get_current_stock()
+try:
+    stock_df = get_current_stock()
+except Exception as _exc:
+    st.error(f"Ошибка при загрузке остатков: {_exc}")
+    stock_df = pd.DataFrame(columns=['sku', 'current_stock'])
 
 # Calculate ideal stock
-ideal_stock_df = get_ideal_stock()
+try:
+    ideal_stock_df = get_ideal_stock()
+except Exception as _exc:
+    st.error(f"Ошибка при расчёте идеального стока: {_exc}")
+    ideal_stock_df = pd.DataFrame(columns=_IDEAL_STOCK_COLS)
 
 with tab_sales:
     st.subheader("📥 Загрузка логов и списаний")

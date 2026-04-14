@@ -297,9 +297,10 @@ def get_net_sales_data():
             rows = session.query(NetSale, Product.sku).join(Product).all()
 
         data = [{'sku': sku, 'date': ns.date, 'outbound': float(ns.quantity or 0)} for ns, sku in rows]
+        if not data:
+            return pd.DataFrame(columns=['sku', 'date', 'outbound'])
         df = pd.DataFrame(data)
-        if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
+        df['date'] = pd.to_datetime(df['date'])
         return df
     finally:
         session.close()

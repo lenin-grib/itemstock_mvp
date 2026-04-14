@@ -50,7 +50,15 @@ def get_cached_forecasts():
                 'last_updated': f.last_updated,
             })
         import pandas as pd
-        return pd.DataFrame(data) if data else pd.DataFrame()
+        if data:
+            return pd.DataFrame(data)
+        return pd.DataFrame(columns=[
+            'sku', 'whole_period_sales',
+            'sales_last_week', 'sales_last_2w', 'sales_last_3w', 'sales_last_month',
+            'trend_coef',
+            'forecast_next_week', 'forecast_2w', 'forecast_3w', 'forecast_next_month',
+            'last_updated',
+        ])
     finally:
         session.close()
 
@@ -108,7 +116,12 @@ def get_cached_ideal_stock():
                 'last_updated': s.last_updated,
             })
         import pandas as pd
-        return pd.DataFrame(data) if data else pd.DataFrame()
+        return pd.DataFrame(data) if data else pd.DataFrame(columns=[
+            'sku', 'current_stock',
+            'ideal_stock', 'ideal_stock_2w', 'ideal_stock_3w', 'monthly_ideal_stock',
+            'to_order_week', 'to_order_2w', 'to_order_3w', 'to_order_month',
+            'last_updated',
+        ])
     finally:
         session.close()
 

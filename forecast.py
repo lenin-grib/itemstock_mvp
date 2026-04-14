@@ -126,15 +126,29 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
         if raw_df.empty:
             # Get all SKUs and create forecasts with 0
             all_skus = get_all_skus()
+            _empty_cols = [
+                'sku', 'whole_period_sales',
+                'sales_last_week', 'sales_last_2w', 'sales_last_3w', 'sales_last_month',
+                'trend_coef',
+                'forecast_next_week', 'forecast_2w', 'forecast_3w', 'forecast_next_month',
+            ]
+            if not all_skus:
+                result = pd.DataFrame(columns=_empty_cols)
+                save_forecast_cache(result)
+                return result
             forecasts = []
             for sku in all_skus:
                 forecasts.append({
                     "sku": sku,
                     "sales_last_week": 0,
+                    "sales_last_2w": 0,
+                    "sales_last_3w": 0,
                     "sales_last_month": 0,
                     "whole_period_sales": 0,
                     "trend_coef": 1,
                     "forecast_next_week": 0,
+                    "forecast_2w": 0,
+                    "forecast_3w": 0,
                     "forecast_next_month": 0,
                 })
             result = pd.DataFrame(forecasts)
@@ -197,6 +211,16 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
             "forecast_next_month": forecast_4w,
         })
 
+    _result_cols = [
+        "sku", "whole_period_sales",
+        "sales_last_week", "sales_last_2w", "sales_last_3w", "sales_last_month",
+        "trend_coef",
+        "forecast_next_week", "forecast_2w", "forecast_3w", "forecast_next_month",
+    ]
+    if not forecasts:
+        result = pd.DataFrame(columns=_result_cols)
+        save_forecast_cache(result)
+        return result
     result = pd.DataFrame(forecasts)
     result = result.assign(
         forecast_next_week=lambda df: np.ceil(df["forecast_next_week"]).astype(int),
@@ -233,7 +257,7 @@ def get_forecasts(trend_period_weeks=8):
     Возвращает прогнозы из кэша или рассчитывает новые
     """
     cached = get_cached_forecasts()
-    if not cached.empty:
+    if not cached.empty and 'sku' in cached.columns:
         return cached
 
     return calculate_trend_and_forecast(trend_period_weeks=trend_period_weeks)
