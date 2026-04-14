@@ -7,6 +7,7 @@ from db_utils import get_parameters, get_uploaded_files, update_parameter, get_a
 from parser import parse_and_save_file, parse_and_save_spoils_file, parse_and_save_price_list_file
 from forecast import get_forecasts
 from ideal_stock import get_ideal_stock, calculate_ideal_stock
+from order_service import build_recommended_orders
 from supplier_service import save_supplier_file, get_suppliers, update_supplier_info
 from cache_service import invalidate_forecast_cache, invalidate_ideal_stock_cache
 from database import init_db
@@ -161,7 +162,10 @@ with tab_sales:
                     st.success("Кэш прогноза очищен, выполняется перерасчет")
                     st.rerun()
 
-            st.dataframe(forecast_df)
+            display_forecast_df = forecast_df.copy()
+            if 'last_updated' in display_forecast_df.columns:
+                display_forecast_df = display_forecast_df.drop(columns=['last_updated'])
+            st.dataframe(display_forecast_df)
 
             # Popular and no-demand items: use same period metric as forecast table
             period_weeks = int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4)))
@@ -202,7 +206,7 @@ with tab_sales:
                 if sku not in set(sales_view['sku']) and sku not in existing:
                     no_demand = pd.concat([no_demand, pd.DataFrame([{'sku': sku}])], ignore_index=True)
 
-            col_popular, col_no_demand = st.columns(2)
+            col_popular, col_no_demand = st.columns([3, 2])
             with col_popular:
                 st.subheader("🔥 Популярные товары")
                 st.dataframe(popular.head(20), height=320, width='stretch')
@@ -260,6 +264,43 @@ with tab_orders:
                 ]].style.apply(highlight_row, axis=1)
 
                 st.dataframe(styled_df)
+
+                st.subheader("🧾 Рекомендуемые заказы")
+                recommended_orders, missing_supplier_skus, below_min_warnings = build_recommended_orders(order_df)
+
+                if missing_supplier_skus:
+                    st.warning("Не найден поставщик для следующих товаров:")
+                    st.dataframe(pd.DataFrame({'Товар': missing_supplier_skus}), height=140, width='stretch')
+
+                below_min_map = {
+                    w['supplier_name']: w for w in below_min_warnings
+                }
+
+                if recommended_orders:
+                    for order in recommended_orders:
+                        has_min_warning = order['supplier_name'] in below_min_map
+                        base_label = (
+                            f"{order['supplier_name']} | "
+                            f"{order['total_cost']:.2f} ₽ | "
+                            f"Срок: {order['delivery_time'] or 'не указан'}"
+                        )
+                        label = f"❗ {base_label}" if has_min_warning else base_label
+
+                        with st.expander(label, expanded=False):
+                            if has_min_warning:
+                                warn = below_min_map[order['supplier_name']]
+                                st.warning(
+                                    "Сумма заказа без доставки ниже минимальной суммы заказа: "
+                                    f"{warn['subtotal_without_delivery']:.2f} ₽ < {warn['min_order']:.2f} ₽"
+                                )
+                            st.write(
+                                f"Стоимость товаров: {order['subtotal_without_delivery']:.2f} ₽ | "
+                                f"Доставка: {order['delivery_cost']:.2f} ₽ | "
+                                f"Итого: {order['total_cost']:.2f} ₽"
+                            )
+                            st.dataframe(pd.DataFrame(order['items']), width='stretch')
+                else:
+                    st.info("Недостаточно данных прайс-листа для формирования рекомендуемых заказов")
             else:
                 st.info("Нет товаров для заказа на эту неделю")
     else:
