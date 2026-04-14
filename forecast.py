@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from db_utils import get_sales_data, get_all_skus
+from db_utils import get_net_sales_data, get_all_skus
 from cache_service import get_cached_forecasts, save_forecast_cache, invalidate_forecast_cache
 
 
@@ -55,7 +55,7 @@ def calculate_sales_metrics():
     DataFrame с метриками по каждому SKU
     """
 
-    df = get_sales_data()
+    df = get_net_sales_data()
     all_skus = get_all_skus()
 
     if df.empty:
@@ -113,11 +113,10 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
     raw_df = None
     global_latest_date = None
     if weekly_df is None:
-        raw_df = get_sales_data()
+        raw_df = get_net_sales_data()
 
         if raw_df.empty:
             # Get all SKUs and create forecasts with 0
-            from db_utils import get_all_skus
             all_skus = get_all_skus()
             forecasts = []
             for sku in all_skus:
@@ -144,9 +143,9 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
 
     forecasts = []
     trend_weeks = max(2, int(trend_period_weeks))
-    latest_week = weekly_df['week'].max()
+    all_skus = get_all_skus()
 
-    for sku in weekly_df['sku'].unique():
+    for sku in all_skus:
         group = weekly_df[weekly_df['sku'] == sku].sort_values('week')
         recent = group.tail(trend_weeks)
 

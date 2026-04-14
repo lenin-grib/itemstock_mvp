@@ -121,6 +121,21 @@ class SupplierItem(Base):
         Index('idx_supplier_item_supplier', 'supplier_id'),
     )
 
+class NetSale(Base):
+    """Pre-computed net sales: outbound minus spoils, per product per day."""
+    __tablename__ = 'net_sales'
+    id = Column(Integer, primary_key=True)
+    product_id = Column(Integer, ForeignKey('products.id'), nullable=False)
+    date = Column(Date, nullable=False)
+    quantity = Column(Float, default=0, nullable=False)
+
+    product = relationship("Product")
+
+    __table_args__ = (
+        UniqueConstraint('product_id', 'date', name='unique_net_sale'),
+        Index('idx_net_sale_product_date', 'product_id', 'date'),
+    )
+
 class ApproximatePrice(Base):
     __tablename__ = 'approximate_prices'
     sku = Column(String, primary_key=True)

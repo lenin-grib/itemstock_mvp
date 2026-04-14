@@ -3,7 +3,7 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-from db_utils import get_parameters, get_session, get_uploaded_files, update_parameter, get_sales_data, get_all_skus
+from db_utils import get_parameters, get_session, get_uploaded_files, update_parameter, get_all_skus
 from parser import parse_and_save_file, parse_and_save_spoils_file
 from forecast import get_forecasts
 from ideal_stock import get_ideal_stock, calculate_ideal_stock
@@ -150,65 +150,52 @@ if uploaded_log_files:
 
             st.dataframe(forecast_df)
 
-            # Popular items
-            if "whole_period_sales" in forecast_df.columns:
-                period_weeks = int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4)))
-                net_sales_df = get_sales_data()
-                all_skus = get_all_skus()
+            # Popular and no-demand items: use same period metric as forecast table
+            period_weeks = int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4)))
+            all_skus = get_all_skus()
 
-                if not net_sales_df.empty:
-                    net_sales_df['date'] = pd.to_datetime(net_sales_df['date'])
-                    latest_date = net_sales_df['date'].max()
-                    cutoff_date = latest_date - pd.Timedelta(weeks=max(1, period_weeks) - 1)
-                    period_net_sales = (
-                        net_sales_df.loc[net_sales_df['date'] >= cutoff_date]
-                        .groupby('sku', as_index=False)['outbound']
-                        .sum()
-                        .rename(columns={'outbound': 'net_sales_period'})
-                    )
-                else:
-                    period_net_sales = pd.DataFrame(columns=['sku', 'net_sales_period'])
+            sales_view = forecast_df[['sku', 'whole_period_sales', 'forecast_next_month']].copy()
+            sales_view['net_sales_period'] = pd.to_numeric(sales_view['whole_period_sales'], errors='coerce').fillna(0)
+            sales_view = sales_view.merge(
+                stock_df[['sku', 'current_stock']],
+                on='sku',
+                how='left'
+            )
+            sales_view['current_stock'] = sales_view['current_stock'].fillna(0)
 
-                period_net_sales = period_net_sales.set_index('sku') if not period_net_sales.empty else pd.DataFrame(index=[])
-                sales_map = period_net_sales['net_sales_period'].to_dict() if 'net_sales_period' in period_net_sales.columns else {}
+            popular_threshold = st.number_input(
+                "Порог популярности (продаж за период)",
+                min_value=0,
+                value=max(1, int(35 * (period_weeks / 4))),
+                step=1
+            )
 
-                sales_view = forecast_df[['sku', 'forecast_next_week', 'forecast_next_month']].copy()
-                sales_view['net_sales_period'] = sales_view['sku'].map(sales_map).fillna(0)
+            popular = sales_view.loc[
+                sales_view["net_sales_period"] > popular_threshold,
+                ["sku", "net_sales_period", "current_stock", "forecast_next_month"]
+            ].sort_values("net_sales_period", ascending=False)
 
-                popular_threshold = st.number_input(
-                    "Порог популярности (продаж за период)",
-                    min_value=0,
-                    value=max(1, int(35 * (period_weeks / 4))),
-                    step=1
-                )
+            popular = popular.rename(columns={
+                'sku': 'Товар',
+                'net_sales_period': 'Продажи за период',
+                'current_stock': 'Осталось на складе',
+                'forecast_next_month': 'Прогноз на следующий месяц'
+            })
 
-                popular = sales_view.loc[
-                    sales_view["net_sales_period"] >= popular_threshold,
-                    ["sku", "net_sales_period", "forecast_next_week", "forecast_next_month"]
-                ].sort_values("net_sales_period", ascending=False)
+            no_demand = sales_view.loc[sales_view["net_sales_period"] == 0, ["sku"]]
 
-                popular = popular.rename(columns={
-                    'net_sales_period': 'sales_period'
-                })
+            existing = set(no_demand['sku'])
+            for sku in all_skus:
+                if sku not in set(sales_view['sku']) and sku not in existing:
+                    no_demand = pd.concat([no_demand, pd.DataFrame([{'sku': sku}])], ignore_index=True)
 
-                if not popular.empty:
-                    st.subheader("🔥 Популярные товары")
-                    st.dataframe(popular)
-
-                # No demand items
-                no_demand = sales_view.loc[
-                    sales_view["net_sales_period"] == 0, ["sku"]
-                ]
-
-                # Include SKUs that are absent in forecast view but exist in catalog.
-                existing = set(no_demand['sku'])
-                for sku in all_skus:
-                    if sku not in set(sales_view['sku']) and sku not in existing:
-                        no_demand = pd.concat([no_demand, pd.DataFrame([{'sku': sku}])], ignore_index=True)
-
-                if not no_demand.empty:
-                    st.subheader("😴 Товары без спроса")
-                    st.dataframe(no_demand)
+            col_popular, col_no_demand = st.columns(2)
+            with col_popular:
+                st.subheader("🔥 Популярные товары")
+                st.dataframe(popular.head(20), height=320, use_container_width=True)
+            with col_no_demand:
+                st.subheader("😴 Товары без спроса")
+                st.dataframe(no_demand, height=320, use_container_width=True)
         else:
             st.warning("Нет данных для прогноза")
 
