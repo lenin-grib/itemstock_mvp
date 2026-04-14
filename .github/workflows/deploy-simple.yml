@@ -89,6 +89,9 @@ jobs:
             
             # Create namespace if needed
             microk8s kubectl create namespace $NAMESPACE --dry-run=client -o yaml | microk8s kubectl apply -f -
+
+            # Ensure ingress controller is enabled
+            microk8s enable ingress || true
             
             # Apply manifests
             echo "Applying Kubernetes manifests..."
@@ -127,6 +130,9 @@ jobs:
             echo ""
             echo "Services:"
             microk8s kubectl get svc -n $NAMESPACE
+            echo ""
+            echo "Ingress:"
+            microk8s kubectl get ingress -n $NAMESPACE
           DEPLOY_SCRIPT
 
       - name: Deployment status
