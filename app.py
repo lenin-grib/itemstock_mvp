@@ -117,7 +117,7 @@ if all_uploaded_files:
 
         files_df = pd.DataFrame(file_data, columns=["ID", "Название", "Тип", "Диапазон дат"])
 
-        st.dataframe(files_df, height=200, width='stretch')
+        st.dataframe(files_df, height=200, use_container_width=True)
 else:
     with st.expander("📁 Загрузки"):
         st.info("Загрузите файлы в соответствующих вкладках")
@@ -274,10 +274,10 @@ with tab_sales:
             col_popular, col_no_demand = st.columns([3, 2])
             with col_popular:
                 st.subheader("🔥 Популярные товары")
-                st.dataframe(popular.head(20), height=320, width='stretch')
+                st.dataframe(popular.head(20), height=320, use_container_width=True)
             with col_no_demand:
                 st.subheader("😴 Товары без спроса")
-                st.dataframe(no_demand, height=320, width='stretch')
+                st.dataframe(no_demand, height=320, use_container_width=True)
     else:
         st.warning("Нет данных для прогноза")
 
@@ -369,7 +369,7 @@ with tab_orders:
 
                 if missing_supplier_skus:
                     st.warning("Не найден поставщик для следующих товаров:")
-                    st.dataframe(pd.DataFrame({'Товар': missing_supplier_skus}), height=140, width='stretch')
+                    st.dataframe(pd.DataFrame({'Товар': missing_supplier_skus}), height=140, use_container_width=True)
 
                 below_min_map = {
                     w['supplier_name']: w for w in below_min_warnings
@@ -411,7 +411,7 @@ with tab_orders:
                                 f"Доставка: {order['delivery_cost']:.2f} ₽ | "
                                 f"Итого: {order['total_cost']:.2f} ₽"
                             )
-                            st.dataframe(pd.DataFrame(order['items']), width='stretch')
+                            st.dataframe(pd.DataFrame(order['items']), use_container_width=True)
                 else:
                     st.info("Недостаточно данных прайс-листа для формирования рекомендуемых заказов")
             else:
@@ -452,7 +452,7 @@ with tab_suppliers:
         edited = st.data_editor(
             display_df,
             num_rows='fixed',
-            width='stretch',
+            use_container_width=True,
             column_config={
                 'Название': st.column_config.Column(disabled=True)
             }
