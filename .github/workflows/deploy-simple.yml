@@ -40,13 +40,15 @@ jobs:
           ssh-keyscan -H "$MICROK8S_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
           # Deploy script
-          ssh -tt "$MICROK8S_USER@$MICROK8S_HOST" << DEPLOY_SCRIPT
+          ssh -tt "$MICROK8S_USER@$MICROK8S_HOST" << 'DEPLOY_SCRIPT'
             set -e
             
             REPO_NAME="itemstock_mvp"
             DEPLOYMENT="itemstock-app"
             NAMESPACE="itemstock"
-            IMAGE_TAG="$IMAGE_TAG"
+            IMAGE_TAG="${{ steps.image.outputs.tag }}"
+            BRANCH="${{ github.ref_name }}"
+            REPOSITORY="${{ github.repository }}"
             
             echo "Starting deployment to microk8s..."
             echo "Image tag: $IMAGE_TAG"
@@ -62,16 +64,22 @@ jobs:
               echo "Updating existing repository..."
               cd $REPO_NAME
               git fetch origin
-              git checkout ${{ env.BRANCH }}
-              git pull origin ${{ env.BRANCH }}
+              git checkout "$BRANCH"
+              git pull origin "$BRANCH"
             else
               echo "Cloning repository..."
-              git clone -b ${{ env.BRANCH }} https://github.com/${{ github.repository }}.git $REPO_NAME
+              git clone -b "$BRANCH" "https://github.com/$REPOSITORY.git" $REPO_NAME
               cd $REPO_NAME
             fi
             
             # Build Docker image locally
             echo "Building Docker image locally on microk8s..."
+            pwd
+            ls -la
+            if [ ! -f "Dockerfile" ]; then
+              echo "ERROR: Dockerfile not found in $(pwd)"
+              exit 1
+            fi
             docker build -t itemstock:$IMAGE_TAG .
             
             # Tag for microk8s registry (if using local registry)
