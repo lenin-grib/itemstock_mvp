@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: itemstock-app
+  namespace: itemstock
+  labels:
+    app: itemstock
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: itemstock
+  template:
+    metadata:
+      labels:
+        app: itemstock
+    spec:
+      containers:
+        - name: itemstock
+          image: itemstock:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8501
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8501
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8501
+            initialDelaySeconds: 40
+            periodSeconds: 20

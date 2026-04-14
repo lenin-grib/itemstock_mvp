@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: itemstock-service
+  namespace: itemstock
+  labels:
+    app: itemstock
+spec:
+  selector:
+    app: itemstock
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8501
+  type: ClusterIP

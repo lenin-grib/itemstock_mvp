@@ -91,7 +91,11 @@ jobs:
             
             # Apply manifests
             echo "Applying Kubernetes manifests..."
-            microk8s kubectl apply -f k8s/deployment.yaml
+            if [ ! -d "k8s" ]; then
+              echo "ERROR: k8s directory not found in $(pwd)"
+              exit 1
+            fi
+            microk8s kubectl apply -f k8s/
             
             # Update image in deployment
             echo "Updating deployment with new image..."
