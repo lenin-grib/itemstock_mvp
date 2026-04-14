@@ -20,7 +20,7 @@ spec:
       containers:
         - name: itemstock
           image: itemstock:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           ports:
             - containerPort: 8501
           readinessProbe:

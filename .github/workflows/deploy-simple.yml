@@ -82,9 +82,10 @@ jobs:
             fi
             docker build -t itemstock:$IMAGE_TAG .
             
-            # Tag for microk8s registry (if using local registry)
-            # docker tag itemstock:$IMAGE_TAG localhost:32000/itemstock:$IMAGE_TAG
-            # docker push localhost:32000/itemstock:$IMAGE_TAG
+            # Import image into microk8s containerd (microk8s cannot see Docker images directly)
+            echo "Importing image into microk8s containerd..."
+            docker save itemstock:$IMAGE_TAG | microk8s ctr image import -
+            echo "Image imported successfully"
             
             # Create namespace if needed
             microk8s kubectl create namespace $NAMESPACE --dry-run=client -o yaml | microk8s kubectl apply -f -
