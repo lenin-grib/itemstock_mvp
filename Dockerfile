@@ -17,6 +17,7 @@ COPY app.py .
 COPY parser.py .
 COPY forecast.py .
 COPY ideal_stock.py .
+COPY order_service.py .
 COPY supplier_service.py .
 COPY cache_service.py .
 COPY database.py .
