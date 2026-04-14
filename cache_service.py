@@ -38,10 +38,10 @@ def get_cached_forecasts():
             data.append({
                 'sku': f.sku,
                 'whole_period_sales': f.whole_period_sales,
-                'sales_last_week': f.sales_last_week,
-                'sales_last_2w': f.sales_last_2w,
-                'sales_last_3w': f.sales_last_3w,
                 'sales_last_month': f.sales_last_month,
+                'sales_last_3w': f.sales_last_3w,
+                'sales_last_2w': f.sales_last_2w,
+                'sales_last_week': f.sales_last_week,
                 'trend_coef': f.trend_coef,
                 'forecast_next_week': f.forecast_next_week,
                 'forecast_2w': f.forecast_2w,
@@ -53,8 +53,9 @@ def get_cached_forecasts():
         if data:
             return pd.DataFrame(data)
         return pd.DataFrame(columns=[
-            'sku', 'whole_period_sales',
-            'sales_last_week', 'sales_last_2w', 'sales_last_3w', 'sales_last_month',
+            'sku',
+            'whole_period_sales',
+            'sales_last_month', 'sales_last_3w', 'sales_last_2w', 'sales_last_week',
             'trend_coef',
             'forecast_next_week', 'forecast_2w', 'forecast_3w', 'forecast_next_month',
             'last_updated',

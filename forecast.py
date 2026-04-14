@@ -4,6 +4,21 @@ from db_utils import get_net_sales_data, get_all_skus
 from cache_service import get_cached_forecasts, save_forecast_cache, invalidate_forecast_cache
 
 
+FORECAST_COLUMNS = [
+    "sku",
+    "whole_period_sales",
+    "sales_last_month",
+    "sales_last_3w",
+    "sales_last_2w",
+    "sales_last_week",
+    "trend_coef",
+    "forecast_next_week",
+    "forecast_2w",
+    "forecast_3w",
+    "forecast_next_month",
+]
+
+
 def get_last_n_days_sales(raw_df, sku, n_days, reference_date=None):
     sku_df = raw_df[raw_df['sku'] == sku].sort_values('date')
     if sku_df.empty:
@@ -126,12 +141,7 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
         if raw_df.empty:
             # Get all SKUs and create forecasts with 0
             all_skus = get_all_skus()
-            _empty_cols = [
-                'sku', 'whole_period_sales',
-                'sales_last_week', 'sales_last_2w', 'sales_last_3w', 'sales_last_month',
-                'trend_coef',
-                'forecast_next_week', 'forecast_2w', 'forecast_3w', 'forecast_next_month',
-            ]
+            _empty_cols = FORECAST_COLUMNS.copy()
             if not all_skus:
                 result = pd.DataFrame(columns=_empty_cols)
                 save_forecast_cache(result)
@@ -156,6 +166,7 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
             return result
 
         raw_df['date'] = pd.to_datetime(raw_df['date'])
+        raw_df = raw_df.sort_values(['sku', 'date'])
         global_latest_date = raw_df['date'].max()
         weekly_df = raw_df.copy()
         weekly_df['week'] = weekly_df['date'].dt.to_period('W').apply(lambda r: r.start_time)
@@ -211,12 +222,7 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
             "forecast_next_month": forecast_4w,
         })
 
-    _result_cols = [
-        "sku", "whole_period_sales",
-        "sales_last_week", "sales_last_2w", "sales_last_3w", "sales_last_month",
-        "trend_coef",
-        "forecast_next_week", "forecast_2w", "forecast_3w", "forecast_next_month",
-    ]
+    _result_cols = FORECAST_COLUMNS.copy()
     if not forecasts:
         result = pd.DataFrame(columns=_result_cols)
         save_forecast_cache(result)
@@ -227,21 +233,7 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
         forecast_2w=lambda df: np.ceil(df["forecast_2w"]).astype(int),
         forecast_3w=lambda df: np.ceil(df["forecast_3w"]).astype(int),
         forecast_next_month=lambda df: np.ceil(df["forecast_next_month"]).astype(int),
-    )[
-        [
-            "sku",
-            "whole_period_sales",
-            "sales_last_week",
-            "sales_last_2w",
-            "sales_last_3w",
-            "sales_last_month",
-            "trend_coef",
-            "forecast_next_week",
-            "forecast_2w",
-            "forecast_3w",
-            "forecast_next_month",
-        ]
-    ]
+    )[FORECAST_COLUMNS]
 
     # Ensure unique SKU
     result = result.drop_duplicates(subset='sku')
@@ -258,6 +250,9 @@ def get_forecasts(trend_period_weeks=8):
     """
     cached = get_cached_forecasts()
     if not cached.empty and 'sku' in cached.columns:
-        return cached
+        ordered_cols = [c for c in FORECAST_COLUMNS if c in cached.columns]
+        if 'last_updated' in cached.columns:
+            ordered_cols.append('last_updated')
+        return cached.reindex(columns=ordered_cols)
 
     return calculate_trend_and_forecast(trend_period_weeks=trend_period_weeks)

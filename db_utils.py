@@ -29,13 +29,18 @@ def _is_newer_source(session, model, existing_source_file_id, new_file, new_file
     if existing_file is None:
         return True
 
-    existing_last_date = _source_max_date(session, model, existing_source_file_id)
+    # Priority rule: newer source is determined by uploaded file end date (date_to),
+    # not by table-specific max row date.
+    existing_last_date = existing_file.date_to or _source_max_date(session, model, existing_source_file_id)
+    incoming_last_date = new_file_last_date or getattr(new_file, 'date_to', None)
     if existing_last_date is None:
         return True
+    if incoming_last_date is None:
+        return False
 
-    if new_file_last_date > existing_last_date:
+    if incoming_last_date > existing_last_date:
         return True
-    if new_file_last_date < existing_last_date:
+    if incoming_last_date < existing_last_date:
         return False
 
     return (new_file.upload_date or datetime.min) >= (existing_file.upload_date or datetime.min)
@@ -59,7 +64,7 @@ def save_parsed_data(df, filename):
             })
         )
         file_first_date = work_df['date'].min() if not work_df.empty else None
-        file_last_date = work_df['date'].max()
+        file_last_date = work_df['date'].max() if not work_df.empty else None
 
         existing_file = session.query(UploadedFile).filter_by(filename=filename).first()
         if existing_file:
@@ -163,7 +168,7 @@ def save_spoils_data(df, filename):
             .agg({'quantity': 'sum'})
         )
         file_first_date = work_df['date'].min() if not work_df.empty else None
-        file_last_date = work_df['date'].max()
+        file_last_date = work_df['date'].max() if not work_df.empty else None
 
         spoils_filename = f"spoils::{filename}"
         existing_file = session.query(UploadedFile).filter_by(filename=spoils_filename).first()
@@ -249,6 +254,12 @@ def rebuild_net_sales(session=None):
                 session.commit()
             return
 
+        # Defensive deduplication for legacy data: ensure one sales row per product/date.
+        sales_df = (
+            sales_df.groupby(['product_id', 'date'], as_index=False)['quantity']
+            .sum()
+        )
+
         if not spoils_df.empty:
             merged = sales_df.merge(spoils_df, on=['product_id', 'date'], how='left')
             merged['spoil_qty'] = merged['spoil_qty'].fillna(0)
@@ -257,16 +268,26 @@ def rebuild_net_sales(session=None):
             merged['spoil_qty'] = 0.0
 
         merged['net_qty'] = (merged['quantity'] - merged['spoil_qty']).clip(lower=0)
+        merged = (
+            merged.groupby(['product_id', 'date'], as_index=False)['net_qty']
+            .sum()
+        )
+
+        existing_net_sales = {
+            (int(ns.product_id), ns.date): ns
+            for ns in session.query(NetSale).all()
+        }
 
         for _, row in merged.iterrows():
-            existing = session.query(NetSale).filter_by(
-                product_id=int(row['product_id']), date=row['date']
-            ).first()
+            key = (int(row['product_id']), row['date'])
+            existing = existing_net_sales.get(key)
             net_qty = float(row['net_qty'])
             if existing:
                 existing.quantity = net_qty
             else:
-                session.add(NetSale(product_id=int(row['product_id']), date=row['date'], quantity=net_qty))
+                new_row = NetSale(product_id=key[0], date=key[1], quantity=net_qty)
+                session.add(new_row)
+                existing_net_sales[key] = new_row
 
         current_keys = set(zip(merged['product_id'].astype(int), merged['date']))
         for ns in session.query(NetSale).all():

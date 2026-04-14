@@ -37,6 +37,7 @@ uploaded_log_files = [
     f for f in normalized_uploaded_files
     if str(f[2] or 'logs') == 'logs'
 ]
+has_spoils_file = any(str(f[2] or 'logs') == 'spoils' for f in normalized_uploaded_files)
 uploaded_filenames = [f[1] for f in uploaded_log_files] if uploaded_log_files else []
 
 
@@ -133,9 +134,11 @@ tab_sales, tab_orders, tab_suppliers, tab_params = st.tabs(
 trend_weeks = int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4)))
 
 _FORECAST_COLS = [
-    'sku', 'whole_period_sales',
-    'sales_last_week', 'sales_last_2w', 'sales_last_3w', 'sales_last_month',
-    'trend_coef', 'forecast_next_week', 'forecast_2w', 'forecast_3w', 'forecast_next_month',
+    'sku',
+    'whole_period_sales',
+    'sales_last_month', 'sales_last_3w', 'sales_last_2w', 'sales_last_week',
+    'trend_coef',
+    'forecast_next_week', 'forecast_2w', 'forecast_3w', 'forecast_next_month',
 ]
 _IDEAL_STOCK_COLS = [
     'sku', 'current_stock',
@@ -214,6 +217,12 @@ with tab_sales:
             st.error(f"Ошибка при обработке файла списаний {spoils_file.name}: {str(e)}")
 
     st.divider()
+
+    if not has_spoils_file:
+        st.warning(
+            "Прогноз сейчас рассчитывается без учета списаний. "
+            "Пожалуйста, загрузите файл списаний."
+        )
 
     if not forecast_df.empty:
             st.subheader("📈 Прогноз продаж")
