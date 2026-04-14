@@ -7,6 +7,8 @@ metadata:
     app: itemstock
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: itemstock
@@ -25,11 +27,13 @@ spec:
             httpGet:
               path: /
               port: 8501
-            initialDelaySeconds: 20
-            periodSeconds: 10
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /
               port: 8501
-            initialDelaySeconds: 40
-            periodSeconds: 20
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            failureThreshold: 3

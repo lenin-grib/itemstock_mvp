@@ -105,7 +105,14 @@ jobs:
             
             # Wait for rollout
             echo "Waiting for deployment to rollout..."
-            microk8s kubectl rollout status deployment/$DEPLOYMENT -n $NAMESPACE --timeout=10m
+            microk8s kubectl rollout status deployment/$DEPLOYMENT -n $NAMESPACE --timeout=10m || {
+              echo "Rollout timed out — checking pod status..."
+              microk8s kubectl get pods -n $NAMESPACE -o wide
+              microk8s kubectl describe deployment/$DEPLOYMENT -n $NAMESPACE | tail -20
+              FAILED_POD=$(microk8s kubectl get pods -n $NAMESPACE -l app=itemstock --no-headers | grep -v Running | awk '{print $1}' | head -1)
+              [ -n "$FAILED_POD" ] && microk8s kubectl logs "$FAILED_POD" -n $NAMESPACE --tail=50 || true
+              exit 1
+            }
             
             echo "✓ Deployment completed successfully!"
             
