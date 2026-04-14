@@ -40,13 +40,13 @@ jobs:
           ssh-keyscan -H "$MICROK8S_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
           # Deploy script
-          ssh -tt "$MICROK8S_USER@$MICROK8S_HOST" << 'DEPLOY_SCRIPT'
+          ssh -tt "$MICROK8S_USER@$MICROK8S_HOST" << DEPLOY_SCRIPT
             set -e
             
             REPO_NAME="itemstock_mvp"
             DEPLOYMENT="itemstock-app"
             NAMESPACE="itemstock"
-            IMAGE_TAG="${{ env.IMAGE_TAG }}"
+            IMAGE_TAG="$IMAGE_TAG"
             
             echo "Starting deployment to microk8s..."
             echo "Image tag: $IMAGE_TAG"
