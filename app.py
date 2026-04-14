@@ -66,6 +66,47 @@ def _format_file_date_range(file_type, upload_date, date_from, date_to):
     if date_from and date_to:
         return f"{date_from.strftime('%d.%m.%Y')} - {date_to.strftime('%d.%m.%Y')}"
     return "Нет данных"
+
+
+def _format_rub_amount(value):
+    try:
+        return f"{float(value):,.2f}".replace(',', ' ')
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _day_word_ru(days):
+    days = abs(int(days))
+    last_two = days % 100
+    last_digit = days % 10
+    if 11 <= last_two <= 14:
+        return "дней"
+    if last_digit == 1:
+        return "день"
+    if 2 <= last_digit <= 4:
+        return "дня"
+    return "дней"
+
+
+def _format_delivery_time_ru(delivery_time):
+    if delivery_time is None:
+        return "не указан"
+
+    raw_value = str(delivery_time).strip()
+    if not raw_value:
+        return "не указан"
+
+    try:
+        numeric_value = float(raw_value.replace(',', '.'))
+    except ValueError:
+        return raw_value
+
+    if numeric_value.is_integer():
+        days = int(numeric_value)
+        return f"{days} {_day_word_ru(days)}"
+
+    return raw_value
+
 if all_uploaded_files:
     with st.expander("📁 Загруженные файлы"):
         file_data = []
@@ -218,6 +259,22 @@ with tab_sales:
 
 with tab_orders:
     st.subheader("📥 Загрузка прайс-листа")
+
+    _period_labels = {
+        "1 неделя": 1,
+        "2 недели": 2,
+        "3 недели": 3,
+        "4 недели": 4,
+    }
+    _period_label = st.radio(
+        "Период закупки",
+        options=list(_period_labels.keys()),
+        index=3,
+        horizontal=True,
+        key="order_period_radio",
+    )
+    order_period_weeks = _period_labels[_period_label]
+
     price_list_file = st.file_uploader(
         "Загрузить прайс-лист товаров",
         type=["xlsx"],
@@ -245,28 +302,46 @@ with tab_orders:
                     st.success("Кэш заказов очищен, выполняется перерасчет")
                     st.rerun()
 
-            order_df = ideal_stock_df.loc[ideal_stock_df["to_order_week"] > 0]
+            _period_to_order_col = {1: 'to_order_week', 2: 'to_order_2w', 3: 'to_order_3w', 4: 'to_order_month'}
+            _period_ideal_col = {1: 'ideal_stock', 2: 'ideal_stock_2w', 3: 'ideal_stock_3w', 4: 'monthly_ideal_stock'}
+            _active_to_order = _period_to_order_col.get(order_period_weeks, 'to_order_month')
+            _active_ideal = _period_ideal_col.get(order_period_weeks, 'monthly_ideal_stock')
+            if _active_to_order not in ideal_stock_df.columns:
+                _active_to_order = 'to_order_month'
+            if _active_ideal not in ideal_stock_df.columns:
+                _active_ideal = 'monthly_ideal_stock'
+
+            order_df = ideal_stock_df.loc[ideal_stock_df[_active_to_order] > 0]
             if not order_df.empty:
                 def highlight_row(row):
-                    if row['current_stock'] == 0:
+                    to_order_value = float(row.get(_active_to_order, 0) or 0)
+                    current_stock = float(row.get('current_stock', 0) or 0)
+
+                    if current_stock == 0:
                         return ['background-color: rgba(255, 0, 0, 0.3)'] * len(row)
-                    if row['current_stock'] <= row['monthly_ideal_stock'] / 8:
+                    if to_order_value <= 0:
+                        return [''] * len(row)
+
+                    stock_to_order_ratio = current_stock / to_order_value
+                    if stock_to_order_ratio <= 0.25:
                         return ['background-color: rgba(255, 0, 0, 0.3)'] * len(row)
-                    if row['current_stock'] <= row['monthly_ideal_stock'] / 4:
+                    if stock_to_order_ratio <= 0.5:
                         return ['background-color: rgba(255, 255, 0, 0.3)'] * len(row)
                     return [''] * len(row)
 
                 styled_df = order_df[[
                     "sku",
                     "current_stock",
-                    "monthly_ideal_stock",
-                    "to_order_month"
+                    _active_ideal,
+                    _active_to_order,
                 ]].style.apply(highlight_row, axis=1)
 
                 st.dataframe(styled_df)
 
                 st.subheader("🧾 Рекомендуемые заказы")
-                recommended_orders, missing_supplier_skus, below_min_warnings = build_recommended_orders(order_df)
+                recommended_orders, missing_supplier_skus, below_min_warnings = build_recommended_orders(
+                    order_df, period_weeks=order_period_weeks
+                )
 
                 if missing_supplier_skus:
                     st.warning("Не найден поставщик для следующих товаров:")
@@ -277,16 +352,30 @@ with tab_orders:
                 }
 
                 if recommended_orders:
+                    recommended_orders = sorted(
+                        recommended_orders,
+                        key=lambda x: (1 if x.get('is_without_supplier') else 0, -x['total_cost'])
+                    )
+
                     for order in recommended_orders:
                         has_min_warning = order['supplier_name'] in below_min_map
-                        base_label = (
-                            f"{order['supplier_name']} | "
-                            f"{order['total_cost']:.2f} ₽ | "
-                            f"Срок: {order['delivery_time'] or 'не указан'}"
-                        )
-                        label = f"❗ {base_label}" if has_min_warning else base_label
+                        has_no_supplier_warning = bool(order.get('is_without_supplier'))
+                        if has_no_supplier_warning:
+                            label = f"❗ Без поставщика | {_format_rub_amount(order['total_cost'])} ₽"
+                        else:
+                            base_label = (
+                                f"{order['supplier_name']} | "
+                                f"{_format_rub_amount(order['total_cost'])} ₽ | "
+                                f"Срок: {_format_delivery_time_ru(order['delivery_time'])}"
+                            )
+                            label = f"❗ {base_label}" if has_min_warning else base_label
 
                         with st.expander(label, expanded=False):
+                            if has_no_supplier_warning:
+                                st.warning(
+                                    "В прайс-листе указан поставщик 'Без поставщика' - "
+                                    "эти позиции требуют назначения реального поставщика."
+                                )
                             if has_min_warning:
                                 warn = below_min_map[order['supplier_name']]
                                 st.warning(

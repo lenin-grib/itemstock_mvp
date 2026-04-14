@@ -34,6 +34,10 @@ def _upsert_uploaded_file(session, filename, file_type, date_from=None, date_to=
     return uploaded
 
 
+def _is_without_supplier_name(name):
+    return str(name or '').strip().lower() == 'без поставщика'
+
+
 def save_supplier_file(file):
     """
     Parse and save suppliers from a single-sheet file with supplier metadata only.
@@ -60,6 +64,8 @@ def save_supplier_file(file):
         for _, row in df.iterrows():
             name = str(row.get('поставщик', '')).strip()
             if not name:
+                continue
+            if _is_without_supplier_name(name):
                 continue
 
             contact = str(row.get('контакт', '')).strip()
@@ -205,7 +211,7 @@ def get_suppliers():
     """
     session = get_session()
     try:
-        suppliers = session.query(Supplier).all()
+        suppliers = session.query(Supplier).filter(Supplier.name != 'Без поставщика').all()
         data = []
         for supplier in suppliers:
             item_count = session.query(PriceListItem).filter_by(supplier_id=supplier.id).count()

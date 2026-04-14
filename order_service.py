@@ -33,10 +33,15 @@ def _round_to_next_pack_multiple(required_qty, pack_units):
     return (int(required_qty // pack_units) + 1) * pack_units
 
 
-def build_recommended_orders(order_df):
-    """
-    Build grouped supplier orders from monthly demand (to_order_month) and price list.
+def _is_without_supplier_name(name):
+    return str(name or '').strip().lower() == 'без поставщика'
 
+
+def build_recommended_orders(order_df, period_weeks=4):
+    """
+    Build grouped supplier orders for a given period (1-4 weeks).
+
+    period_weeks: 1, 2, 3 or 4 – selects the matching to_order_Xw column.
     Returns:
       orders: list[dict]
       missing_supplier_skus: list[str]
@@ -45,9 +50,14 @@ def build_recommended_orders(order_df):
     if order_df is None or order_df.empty:
         return [], [], []
 
-    required = order_df[['sku', 'to_order_month']].copy()
-    required['to_order_month'] = pd.to_numeric(required['to_order_month'], errors='coerce').fillna(0)
-    required = required[required['to_order_month'] > 0].copy()
+    _col_map = {1: 'to_order_week', 2: 'to_order_2w', 3: 'to_order_3w', 4: 'to_order_month'}
+    to_order_col = _col_map.get(int(period_weeks), 'to_order_month')
+    if to_order_col not in order_df.columns:
+        to_order_col = 'to_order_month'
+
+    required = order_df[['sku', to_order_col]].rename(columns={to_order_col: '_qty'}).copy()
+    required['_qty'] = pd.to_numeric(required['_qty'], errors='coerce').fillna(0)
+    required = required[required['_qty'] > 0].copy()
     if required.empty:
         return [], [], []
 
@@ -76,9 +86,11 @@ def build_recommended_orders(order_df):
         best_offer = {}
         for row in rows:
             sku = row[0]
+            supplier_name = row[2]
             offer = {
                 'supplier_id': row[1],
-                'supplier_name': row[2],
+                'supplier_name': supplier_name,
+                'is_without_supplier': _is_without_supplier_name(supplier_name),
                 'delivery_cost': float(row[3] or 0),
                 'delivery_time': row[4] or '',
                 'min_order': float(row[5] or 0),
@@ -99,7 +111,7 @@ def build_recommended_orders(order_df):
 
             offer = best_offer[sku]
             pack_units = _parse_packaging_units(offer['packaging'])
-            required_qty = float(row['to_order_month'])
+            required_qty = float(row['_qty'])
             order_qty = _round_to_next_pack_multiple(required_qty, pack_units)
 
             if order_qty <= 0:
@@ -113,6 +125,7 @@ def build_recommended_orders(order_df):
                 grouped[supplier_id] = {
                     'supplier_id': supplier_id,
                     'supplier_name': offer['supplier_name'],
+                    'is_without_supplier': offer['is_without_supplier'],
                     'delivery_cost': offer['delivery_cost'],
                     'delivery_time': offer['delivery_time'],
                     'min_order': offer['min_order'],
@@ -136,7 +149,11 @@ def build_recommended_orders(order_df):
             order['items'] = sorted(order['items'], key=lambda x: x['Товар'])
             orders.append(order)
 
-        orders = sorted(orders, key=lambda x: x['total_cost'], reverse=True)
+        # Keep explicit "Без поставщика" group at the end while preserving cost order for others.
+        orders = sorted(
+            orders,
+            key=lambda x: (1 if x.get('is_without_supplier') else 0, -x['total_cost'])
+        )
 
         below_min_order_warnings = []
         for order in orders:

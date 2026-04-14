@@ -170,11 +170,15 @@ class CachedForecast(Base):
     __tablename__ = 'cached_forecasts'
     sku = Column(String, primary_key=True)
     whole_period_sales = Column(Float)
-    sales_last_week = Column(Float)
-    sales_last_month = Column(Float)
+    sales_last_week = Column(Float)   # 1w
+    sales_last_2w = Column(Float)
+    sales_last_3w = Column(Float)
+    sales_last_month = Column(Float)  # 4w
     trend_coef = Column(Float)
-    forecast_next_week = Column(Integer)
-    forecast_next_month = Column(Integer)
+    forecast_next_week = Column(Integer)  # forecast_1w
+    forecast_2w = Column(Integer)
+    forecast_3w = Column(Integer)
+    forecast_next_month = Column(Integer)  # forecast_4w
     last_updated = Column(DateTime, default=None)
 
     __table_args__ = (
@@ -185,10 +189,14 @@ class CachedIdealStock(Base):
     __tablename__ = 'cached_ideal_stock'
     sku = Column(String, primary_key=True)
     current_stock = Column(Integer)
-    ideal_stock = Column(Integer)
-    monthly_ideal_stock = Column(Integer)
-    to_order_week = Column(Integer)
-    to_order_month = Column(Integer)
+    ideal_stock = Column(Integer)          # ideal_stock_1w
+    ideal_stock_2w = Column(Integer)
+    ideal_stock_3w = Column(Integer)
+    monthly_ideal_stock = Column(Integer)  # ideal_stock_4w
+    to_order_week = Column(Integer)        # to_order_1w
+    to_order_2w = Column(Integer)
+    to_order_3w = Column(Integer)
+    to_order_month = Column(Integer)       # to_order_4w
     last_updated = Column(DateTime, default=None)
 
     __table_args__ = (
@@ -234,6 +242,30 @@ def init_db():
         weeks_param = session.query(Parameter).filter_by(key='trend_period_weeks').first()
         if old_param and weeks_param and (weeks_param.value is None or weeks_param.value <= 0):
             weeks_param.value = max(1, int(old_param.value * 4))
+        # Migrate cached_forecasts: add 2w/3w columns if absent.
+        forecast_cols = {
+            row[1] for row in session.execute(text("PRAGMA table_info(cached_forecasts)")).fetchall()
+        }
+        forecast_migrated = False
+        for col in ('sales_last_2w', 'sales_last_3w', 'forecast_2w', 'forecast_3w'):
+            if col not in forecast_cols:
+                session.execute(text(f"ALTER TABLE cached_forecasts ADD COLUMN {col} FLOAT"))
+                forecast_migrated = True
+        if forecast_migrated:
+            session.execute(text("DELETE FROM cached_forecasts"))
+
+        # Migrate cached_ideal_stock: add 2w/3w columns if absent.
+        ideal_cols = {
+            row[1] for row in session.execute(text("PRAGMA table_info(cached_ideal_stock)")).fetchall()
+        }
+        ideal_migrated = False
+        for col in ('ideal_stock_2w', 'ideal_stock_3w', 'to_order_2w', 'to_order_3w'):
+            if col not in ideal_cols:
+                session.execute(text(f"ALTER TABLE cached_ideal_stock ADD COLUMN {col} INTEGER"))
+                ideal_migrated = True
+        if ideal_migrated:
+            session.execute(text("DELETE FROM cached_ideal_stock"))
+
         session.commit()
     finally:
         session.close()
