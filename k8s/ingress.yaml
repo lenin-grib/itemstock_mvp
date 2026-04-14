@@ -7,10 +7,28 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: "20m"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: public
+  tls:
+    - hosts:
+        - itemstock.lppt.ru
+        - www.itemstock.lppt.ru
+      secretName: itemstock-tls
   rules:
-    - http:
+    - host: itemstock.lppt.ru
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: itemstock-service
+                port:
+                  number: 80
+    - host: www.itemstock.lppt.ru
+      http:
         paths:
           - path: /
             pathType: Prefix
