@@ -35,7 +35,7 @@ jobs:
         run: |
           # Create SSH key
           mkdir -p ~/.ssh
-          echo "$MICROK8S_KEY" > ~/.ssh/id_rsa
+          printf '%s\n' "$MICROK8S_KEY" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "$MICROK8S_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
