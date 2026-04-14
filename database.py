@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, Date, DateTime, ForeignKey, UniqueConstraint, Index, CheckConstraint
+from sqlalchemy import create_engine, Column, Integer, String, Float, Date, DateTime, ForeignKey, UniqueConstraint, Index, CheckConstraint, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 import os
@@ -17,6 +17,8 @@ class UploadedFile(Base):
     id = Column(Integer, primary_key=True)
     filename = Column(String, unique=True, nullable=False)
     upload_date = Column(DateTime, default=None)
+    date_from = Column(Date, nullable=True)
+    date_to = Column(Date, nullable=True)
 
 class Sale(Base):
     __tablename__ = 'sales'
@@ -180,6 +182,15 @@ def init_db():
     # Initialize default parameters if not exist
     session = SessionLocal()
     try:
+        # Lightweight migration for existing SQLite DBs.
+        existing_cols = {
+            row[1] for row in session.execute(text("PRAGMA table_info(uploaded_files)")).fetchall()
+        }
+        if 'date_from' not in existing_cols:
+            session.execute(text("ALTER TABLE uploaded_files ADD COLUMN date_from DATE"))
+        if 'date_to' not in existing_cols:
+            session.execute(text("ALTER TABLE uploaded_files ADD COLUMN date_to DATE"))
+
         params = [
             ('quote_multiplicator', 1.5, 'Коэффициент запаса'),
             ('min_items_in_stock', 5, 'Минимальный запас на складе'),

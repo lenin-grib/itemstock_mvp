@@ -10,7 +10,7 @@ def get_uploaded_files():
     session = get_session()
     try:
         files = session.query(UploadedFile).all()
-        return [(f.id, f.filename, f.upload_date) for f in files]
+        return [(f.id, f.filename, f.upload_date, f.date_from, f.date_to) for f in files]
     finally:
         session.close()
 
@@ -58,6 +58,7 @@ def save_parsed_data(df, filename):
                 '\u043e\u0441\u0442\u0430\u0442\u043e\u043a \u043d\u0430 \u0441\u043a\u043b\u0430\u0434\u0435': 'last',
             })
         )
+        file_first_date = work_df['date'].min() if not work_df.empty else None
         file_last_date = work_df['date'].max()
 
         existing_file = session.query(UploadedFile).filter_by(filename=filename).first()
@@ -66,9 +67,16 @@ def save_parsed_data(df, filename):
             session.query(Supply).filter_by(source_file_id=existing_file.id).delete()
             session.query(Balance).filter_by(source_file_id=existing_file.id).delete()
             existing_file.upload_date = datetime.now()
+            existing_file.date_from = file_first_date
+            existing_file.date_to = file_last_date
             uploaded_file = existing_file
         else:
-            uploaded_file = UploadedFile(filename=filename, upload_date=datetime.now())
+            uploaded_file = UploadedFile(
+                filename=filename,
+                upload_date=datetime.now(),
+                date_from=file_first_date,
+                date_to=file_last_date,
+            )
             session.add(uploaded_file)
         session.flush()
 
@@ -152,6 +160,7 @@ def save_spoils_data(df, filename):
             work_df.groupby(['sku', 'date', 'reason'], as_index=False)
             .agg({'quantity': 'sum'})
         )
+        file_first_date = work_df['date'].min() if not work_df.empty else None
         file_last_date = work_df['date'].max()
 
         spoils_filename = f"spoils::{filename}"
@@ -159,9 +168,16 @@ def save_spoils_data(df, filename):
         if existing_file:
             session.query(Spoil).filter_by(source_file_id=existing_file.id).delete()
             existing_file.upload_date = datetime.now()
+            existing_file.date_from = file_first_date
+            existing_file.date_to = file_last_date
             uploaded_file = existing_file
         else:
-            uploaded_file = UploadedFile(filename=spoils_filename, upload_date=datetime.now())
+            uploaded_file = UploadedFile(
+                filename=spoils_filename,
+                upload_date=datetime.now(),
+                date_from=file_first_date,
+                date_to=file_last_date,
+            )
             session.add(uploaded_file)
         session.flush()
 
