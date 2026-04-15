@@ -92,6 +92,11 @@ jobs:
 
             # Ensure ingress controller is enabled
             microk8s enable ingress || true
+            microk8s enable cert-manager || true
+            echo "Waiting for cert-manager to be ready..."
+            microk8s kubectl wait --for=condition=Available deployment/cert-manager -n cert-manager --timeout=180s || true
+            microk8s kubectl wait --for=condition=Available deployment/cert-manager-webhook -n cert-manager --timeout=180s || true
+            microk8s kubectl wait --for=condition=Available deployment/cert-manager-cainjector -n cert-manager --timeout=180s || true
             
             # Apply manifests
             echo "Applying Kubernetes manifests..."
