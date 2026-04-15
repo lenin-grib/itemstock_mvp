@@ -3,7 +3,7 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-from db_utils import get_parameters, get_uploaded_files, update_parameter, get_all_skus
+from db_utils import get_parameters, get_uploaded_files, update_parameter, update_parameters, reset_database_data, get_all_skus
 from parser import parse_and_save_file, parse_and_save_spoils_file, parse_and_save_price_list_file
 from forecast import get_forecasts
 from ideal_stock import get_ideal_stock, calculate_ideal_stock
@@ -515,7 +515,7 @@ with tab_params:
     new_quote = st.number_input(
         "Коэффициент запаса",
         min_value=0.1,
-        value=float(params.get('quote_multiplicator', 1.5)),
+        value=float(params.get('quote_multiplicator', 1.0)),
         step=0.1,
         format="%.2f",
     )
@@ -533,10 +533,63 @@ with tab_params:
     )
 
     if st.button("Сохранить параметры"):
-        update_parameter('quote_multiplicator', new_quote)
-        update_parameter('min_items_in_stock', new_min_stock)
-        update_parameter('trend_period_weeks', new_trend_period)
-        invalidate_forecast_cache()
-        invalidate_ideal_stock_cache()
-        st.success("Параметры сохранены")
-        st.rerun()
+        try:
+            update_parameters({
+                'quote_multiplicator': new_quote,
+                'min_items_in_stock': new_min_stock,
+                'trend_period_weeks': new_trend_period,
+            })
+            invalidate_forecast_cache()
+            invalidate_ideal_stock_cache()
+            st.success("Параметры сохранены")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Не удалось сохранить параметры: {e}")
+
+    st.divider()
+    st.markdown("### Опасная зона")
+
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stBaseButton-primary"] {
+            background-color: #c62828;
+            border-color: #b71c1c;
+            color: white;
+        }
+        div[data-testid="stBaseButton-primary"]:hover {
+            background-color: #b71c1c;
+            border-color: #8e0000;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if 'reset_db_requested' not in st.session_state:
+        st.session_state['reset_db_requested'] = False
+
+    if st.button("Сбросить БД", type="primary"):
+        st.session_state['reset_db_requested'] = True
+
+    if st.session_state.get('reset_db_requested'):
+        st.error("Вы действительно хотите полностью очистить базу данных? Это действие необратимо.")
+        confirm_reset = st.checkbox("Да, подтверждаю полный сброс БД", key="confirm_reset_db")
+        col_confirm, col_cancel = st.columns(2)
+
+        with col_confirm:
+            if st.button("Подтвердить сброс", type="primary", disabled=not confirm_reset):
+                try:
+                    reset_database_data()
+                    st.session_state['reset_db_requested'] = False
+                    st.session_state['confirm_reset_db'] = False
+                    st.success("База данных успешно сброшена")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Не удалось сбросить БД: {e}")
+
+        with col_cancel:
+            if st.button("Отмена сброса"):
+                st.session_state['reset_db_requested'] = False
+                st.session_state['confirm_reset_db'] = False
+                st.rerun()

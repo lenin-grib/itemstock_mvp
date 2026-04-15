@@ -21,6 +21,12 @@ spec:
         - name: itemstock
           image: itemstock:latest
           imagePullPolicy: Never
+          env:
+            - name: SQLITE_PATH
+              value: /app/data/app.db
+          volumeMounts:
+            - name: itemstock-data
+              mountPath: /app/data
           ports:
             - containerPort: 8501
           readinessProbe:
@@ -37,3 +43,7 @@ spec:
             initialDelaySeconds: 40
             periodSeconds: 20
             failureThreshold: 3
+      volumes:
+        - name: itemstock-data
+          persistentVolumeClaim:
+            claimName: itemstock-data-pvc

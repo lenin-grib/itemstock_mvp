@@ -204,7 +204,8 @@ class CachedIdealStock(Base):
     )
 
 # Database setup
-DATABASE_URL = "sqlite:///app.db"
+sqlite_path = os.environ.get('SQLITE_PATH', 'app.db')
+DATABASE_URL = f"sqlite:///{sqlite_path}"
 engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -270,5 +271,5 @@ def init_db():
     finally:
         session.close()
 
-if not os.path.exists('app.db'):
+if not os.path.exists(sqlite_path):
     init_db()

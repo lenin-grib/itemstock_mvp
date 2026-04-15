@@ -2,6 +2,8 @@ from database import SessionLocal, Product, UploadedFile, Sale, Supply, Balance,
 from datetime import datetime
 import pandas as pd
 from sqlalchemy import func
+from sqlalchemy.exc import OperationalError
+import time
 
 def get_session():
     return SessionLocal()
@@ -431,11 +433,77 @@ def get_parameters():
 
 
 def update_parameter(key, value):
-    session = get_session()
-    try:
-        param = session.query(Parameter).filter_by(key=key).first()
-        if param:
-            param.value = value
+    update_parameters({key: value})
+
+
+def update_parameters(values):
+    """Atomically update multiple parameters with retry on SQLite lock contention."""
+    if not values:
+        return
+
+    attempts = 5
+    for attempt in range(1, attempts + 1):
+        session = get_session()
+        try:
+            for key, value in values.items():
+                param = session.query(Parameter).filter_by(key=key).first()
+                if param:
+                    param.value = value
             session.commit()
-    finally:
-        session.close()
+            return
+        except OperationalError as exc:
+            session.rollback()
+            message = str(exc).lower()
+            is_locked = 'database is locked' in message or 'database table is locked' in message
+            if is_locked and attempt < attempts:
+                time.sleep(0.2 * attempt)
+                continue
+            raise
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+
+def reset_database_data():
+    """Delete all business data and re-create default parameters/state."""
+    from sqlalchemy import text as sa_text
+    from database import engine, init_db
+
+    tables_in_order = [
+        'net_sales', 'sales', 'supplies', 'balances', 'spoils',
+        'price_list_items', 'supplier_items', 'approximate_prices',
+        'cached_forecasts', 'cached_ideal_stock',
+        'uploaded_files', 'suppliers', 'products', 'parameters',
+    ]
+
+    # Close all pooled connections so SQLite lock is released before we start.
+    engine.dispose()
+
+    last_exc = None
+    for attempt in range(1, 8):
+        # Use a raw connection with busy_timeout so SQLite waits instead of
+        # immediately raising OperationalError when another thread still holds
+        # a short-lived lock.
+        try:
+            with engine.connect() as conn:
+                conn.execute(sa_text("PRAGMA busy_timeout = 15000"))
+                for table in tables_in_order:
+                    conn.execute(sa_text(f"DELETE FROM {table}"))
+                conn.commit()
+            last_exc = None
+            break
+        except OperationalError as e:
+            last_exc = e
+            if 'database is locked' in str(e):
+                time.sleep(1.0 * attempt)
+                engine.dispose()
+                continue
+            raise
+
+    if last_exc is not None:
+        raise last_exc
+
+    # Re-create default parameter rows/migrations after data wipe.
+    init_db()
