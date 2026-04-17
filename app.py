@@ -570,6 +570,7 @@ with tab_params:
         st.session_state['reset_db_requested'] = False
 
     if st.button("Сбросить БД", type="primary"):
+        st.session_state.pop('confirm_reset_db', None)
         st.session_state['reset_db_requested'] = True
 
     if st.session_state.get('reset_db_requested'):
@@ -582,7 +583,6 @@ with tab_params:
                 try:
                     reset_database_data()
                     st.session_state['reset_db_requested'] = False
-                    st.session_state['confirm_reset_db'] = False
                     st.success("База данных успешно сброшена")
                     st.rerun()
                 except Exception as e:
@@ -591,5 +591,4 @@ with tab_params:
         with col_cancel:
             if st.button("Отмена сброса"):
                 st.session_state['reset_db_requested'] = False
-                st.session_state['confirm_reset_db'] = False
                 st.rerun()
