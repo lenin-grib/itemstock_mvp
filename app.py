@@ -251,6 +251,8 @@ with tab_sales:
     if not forecast_df.empty:
             st.subheader("📈 Прогноз продаж")
 
+            whole_period_days = max(1, trend_weeks * 7)
+
             col1, col2 = st.columns([3, 1])
             with col1:
                 st.write("")
@@ -266,6 +268,12 @@ with tab_sales:
                 )
             else:
                 st.info("В прогнозе пока нет даты из обработанных файлов логов.")
+
+            st.caption(
+                f"Сейчас прогноз и whole_period_sales рассчитываются по данным за последние "
+                f"{trend_weeks} нед. ({whole_period_days} дней). Изменить период можно во вкладке "
+                f"\"Параметры\"."
+            )
 
             display_forecast_df = forecast_df.copy()
             display_forecast_df = build_forecast_display_df(display_forecast_df)
