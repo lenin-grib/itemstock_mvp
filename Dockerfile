@@ -22,8 +22,7 @@ COPY supplier_service.py .
 COPY cache_service.py .
 COPY database.py .
 COPY db_utils.py .
-COPY utils.py .
-COPY catalog.py .
+COPY forecast_schema.py .
 
 # Create directory for SQLite database
 RUN mkdir -p /app/data
