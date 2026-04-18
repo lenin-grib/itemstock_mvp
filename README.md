@@ -155,7 +155,7 @@ Environment variables:
 
 Default business parameters (initialized in DB):
 
-- `quote_multiplicator` = 1.5
+- `quote_multiplicator` = 1.0
 - `min_items_in_stock` = 5
 - `trend_period_weeks` = 8
 

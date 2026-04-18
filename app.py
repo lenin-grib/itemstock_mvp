@@ -8,7 +8,7 @@ from parser import parse_and_save_file, parse_and_save_spoils_file, parse_and_sa
 from forecast import get_forecasts
 from ideal_stock import get_ideal_stock, calculate_ideal_stock
 from order_service import build_recommended_orders
-from supplier_service import save_supplier_file, get_suppliers, update_supplier_info
+from supplier_service import get_suppliers, update_supplier_info
 from cache_service import invalidate_forecast_cache, invalidate_ideal_stock_cache
 from database import init_db
 
@@ -467,22 +467,6 @@ with tab_orders:
 
 with tab_suppliers:
     st.subheader("🧾 Поставщики")
-
-    supplier_file = st.file_uploader(
-        "Загрузить файл поставщиков",
-        type=["xlsx"],
-        key="supplier_file"
-    )
-
-    if supplier_file is not None:
-        supplier_signature = _uploaded_file_signature(supplier_file)
-        if supplier_signature != st.session_state.get('processed_supplier_upload_signature'):
-            try:
-                save_supplier_file(supplier_file)
-                st.session_state['processed_supplier_upload_signature'] = supplier_signature
-                st.rerun()
-            except Exception as e:
-                st.error(f"Ошибка при обработке файла поставщиков: {str(e)}")
 
     suppliers_df = get_suppliers()
     if not suppliers_df.empty:

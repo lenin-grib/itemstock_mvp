@@ -230,7 +230,7 @@ def init_db():
             session.execute(text("UPDATE uploaded_files SET file_type='logs' WHERE file_type IS NULL OR file_type = ''"))
 
         params = [
-            ('quote_multiplicator', 1.5, 'Коэффициент запаса'),
+            ('quote_multiplicator', 1.0, 'Коэффициент запаса'),
             ('min_items_in_stock', 5, 'Минимальный запас на складе'),
             ('trend_period_weeks', 8, 'Период для расчёта тренда (недели)')
         ]
