@@ -3,62 +3,75 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-from db_utils import get_parameters, get_uploaded_files, update_parameters, reset_database_data, get_net_sales_data
-from parser import parse_and_save_file, parse_and_save_spoils_file, parse_and_save_price_list_file
-from forecast import get_forecasts
-from forecast_schema import INTERNAL_FORECAST_COLUMNS, build_forecast_display_df
-from ideal_stock import get_ideal_stock
-from order_service import ORDER_PERIOD_TO_ORDER_COLUMN
-from orders_view_service import build_orders_view_model
-from sales_view_service import build_sales_view_model, get_default_popular_threshold
-from suppliers_view_service import build_suppliers_display_df, detect_supplier_changes, normalize_suppliers_for_save
-from supplier_service import get_suppliers, update_supplier_info
-from cache_service import invalidate_forecast_cache, invalidate_ideal_stock_cache
 from database import init_db
+from forecast_schema import INTERNAL_FORECAST_COLUMNS, build_forecast_display_df
+from sales_view_service import get_default_popular_threshold
+from ui_helpers import (
+    file_type_and_name,
+    format_file_date_range,
+    format_rub_amount,
+    format_delivery_time_ru,
+    parse_trend_weeks,
+    validate_forecast_recalc_inputs,
+)
+from sales_tab_controller import (
+    get_uploaded_file_metadata,
+    process_logs_upload,
+    process_spoils_upload,
+    load_forecast_and_stock,
+    prepare_sales_view_data,
+    validate_and_refresh_forecast,
+)
+from orders_tab_controller import (
+    process_price_list_upload,
+    load_ideal_stock_data,
+    prepare_order_display_data,
+    build_orders_view,
+    refresh_orders_cache,
+)
+from suppliers_tab_controller import (
+    load_suppliers_data,
+    process_supplier_changes,
+)
+from params_tab_controller import (
+    load_parameters,
+    normalize_trend_period,
+    validate_and_save_parameters,
+    process_database_reset,
+)
 
 # Initialize database
 init_db()
 
 st.title("📦 Прогноз закупок")
 
-# Show uploaded files
-all_uploaded_files = get_uploaded_files()
+# Load metadata
+normalized_files, has_logs, has_spoils, has_price, latest_logs_date = get_uploaded_file_metadata()
 
+# Display uploaded files
+if normalized_files:
+    with st.expander("📁 Загруженные файлы"):
+        file_data = []
+        for file_id, filename, file_type, upload_date, date_from, date_to in normalized_files:
+            source_label, display_name = file_type_and_name(file_type, filename)
+            date_range = format_file_date_range(source_label, upload_date, date_from, date_to)
+            file_data.append([file_id, display_name, source_label, date_range])
 
-def _normalize_uploaded_file_row(row):
-    """Supports both legacy 5-field and new 6-field tuple formats."""
-    if len(row) == 6:
-        file_id, filename, file_type, upload_date, date_from, date_to = row
-        return file_id, filename, (file_type or 'logs'), upload_date, date_from, date_to
-    if len(row) == 5:
-        file_id, filename, upload_date, date_from, date_to = row
-        return file_id, filename, 'logs', upload_date, date_from, date_to
-    raise ValueError(f"Unexpected uploaded file row format: {row}")
+        if file_data:
+            files_df = pd.DataFrame(file_data, columns=["ID", "Название", "Тип", "Диапазон дат"])
+            st.dataframe(files_df, height=200, use_container_width=True)
+else:
+    with st.expander("📁 Загрузки"):
+        st.info("Загрузите файлы в соответствующих вкладках")
 
+# Parameters (always available)
+params = load_parameters()
 
-normalized_uploaded_files = [_normalize_uploaded_file_row(r) for r in all_uploaded_files]
-uploaded_log_files = [
-    f for f in normalized_uploaded_files
-    if str(f[2] or 'logs') == 'logs'
-]
-has_logs_files = len(uploaded_log_files) > 0
-latest_logs_processed_date = max(
-    (f[5] for f in uploaded_log_files if f[5] is not None),
-    default=None,
+tab_sales, tab_orders, tab_suppliers, tab_params = st.tabs(
+    ["Продажи и прогноз", "Склад и заказы", "Поставщики", "Параметры"]
 )
-has_spoils_file = any(str(f[2] or 'logs') == 'spoils' for f in normalized_uploaded_files)
-has_price_file = any(str(f[2] or 'logs') == 'price' for f in normalized_uploaded_files)
 
-
-def _uploaded_file_signature(file_obj):
-    if file_obj is None:
-        return None
-    file_id = getattr(file_obj, 'file_id', '')
-    file_name = getattr(file_obj, 'name', '')
-    file_size = getattr(file_obj, 'size', '')
-    return f"{file_id}|{file_name}|{file_size}"
-
-
+# Initialize session state
 if 'processed_log_upload_signatures' not in st.session_state:
     st.session_state['processed_log_upload_signatures'] = set()
 if 'logs_uploader_selection_signatures' not in st.session_state:
@@ -67,190 +80,24 @@ if 'processed_spoils_upload_signature' not in st.session_state:
     st.session_state['processed_spoils_upload_signature'] = None
 if 'processed_price_upload_signature' not in st.session_state:
     st.session_state['processed_price_upload_signature'] = None
-if 'processed_supplier_upload_signature' not in st.session_state:
-    st.session_state['processed_supplier_upload_signature'] = None
+if 'reset_db_requested' not in st.session_state:
+    st.session_state['reset_db_requested'] = False
 
-
-def _file_type_and_name(file_type, raw_filename):
-    # Backward-compatible display: strip legacy prefixes if they are present in old rows.
-    display_name = str(raw_filename)
-    for prefix in ('spoils::', 'price::', 'suppliers::'):
-        if display_name.startswith(prefix):
-            display_name = display_name.replace(prefix, '', 1)
-            break
-
-    mapped = {
-        'spoils': 'Списания',
-        'price': 'Прайс-лист',
-        'suppliers': 'Поставщики',
-        'logs': 'Логи',
-    }
-    return mapped.get(str(file_type or 'logs'), 'Логи'), display_name
-
-
-def _format_file_date_range(file_type, upload_date, date_from, date_to):
-    if file_type in ("Прайс-лист", "Поставщики"):
-        if upload_date:
-            return upload_date.strftime('%d.%m.%Y')
-        return "Нет данных"
-
-    if date_from and date_to:
-        return f"{date_from.strftime('%d.%m.%Y')} - {date_to.strftime('%d.%m.%Y')}"
-    return "Нет данных"
-
-
-def _format_rub_amount(value):
-    try:
-        return f"{float(value):,.2f}".replace(',', ' ')
-    except (TypeError, ValueError):
-        return str(value)
-
-
-def _day_word_ru(days):
-    days = abs(int(days))
-    last_two = days % 100
-    last_digit = days % 10
-    if 11 <= last_two <= 14:
-        return "дней"
-    if last_digit == 1:
-        return "день"
-    if 2 <= last_digit <= 4:
-        return "дня"
-    return "дней"
-
-
-def _format_delivery_time_ru(delivery_time):
-    if delivery_time is None:
-        return "не указан"
-
-    raw_value = str(delivery_time).strip()
-    if not raw_value:
-        return "не указан"
-
-    try:
-        numeric_value = float(raw_value.replace(',', '.'))
-    except ValueError:
-        return raw_value
-
-    if numeric_value.is_integer():
-        days = int(numeric_value)
-        return f"{days} {_day_word_ru(days)}"
-
-    return raw_value
-
-
-def _parse_trend_weeks(value):
-    if value is None:
-        return None, "Период тренда не задан. Допустимо только целое положительное значение, минимум 2."
-
-    try:
-        if isinstance(value, str):
-            normalized = value.strip().replace(',', '.')
-            numeric = float(normalized)
-        else:
-            numeric = float(value)
-    except (TypeError, ValueError):
-        return None, "Период тренда должен быть числом. Допустимо только целое положительное значение, минимум 2."
-
-    if not numeric.is_integer():
-        return None, "Период тренда должен быть целым числом. Минимум: 2."
-
-    parsed = int(numeric)
-    if parsed < 2:
-        return None, "Период тренда должен быть не меньше 2 недель."
-
-    return parsed, None
-
-
-def _validate_forecast_recalc_inputs(trend_weeks_value, latest_logs_date):
-    errors = []
-
-    _, trend_error = _parse_trend_weeks(trend_weeks_value)
-    if trend_error:
-        errors.append(trend_error)
-
-    if latest_logs_date is None:
-        errors.append("Нет загруженных логов с датами. Загрузите файл логов перед пересчетом прогноза.")
-
-    try:
-        net_sales_df = get_net_sales_data()
-    except Exception as exc:
-        errors.append(f"Не удалось проверить данные net sales: {exc}")
-        return errors
-
-    required_cols = {'sku', 'date', 'outbound'}
-    missing_cols = required_cols - set(net_sales_df.columns)
-    if missing_cols:
-        errors.append(
-            "В данных net sales отсутствуют обязательные колонки: "
-            + ", ".join(sorted(missing_cols))
-            + "."
-        )
-    elif net_sales_df.empty:
-        errors.append("Нет данных net sales для пересчета прогноза.")
-
-    return errors
-
-if all_uploaded_files:
-    with st.expander("📁 Загруженные файлы"):
-        file_data = []
-        for file_id, filename, file_type, upload_date, date_from, date_to in normalized_uploaded_files:
-            source_label, display_name = _file_type_and_name(file_type, filename)
-            date_range = _format_file_date_range(source_label, upload_date, date_from, date_to)
-            file_data.append([file_id, display_name, source_label, date_range])
-
-        files_df = pd.DataFrame(file_data, columns=["ID", "Название", "Тип", "Диапазон дат"])
-
-        st.dataframe(files_df, height=200, use_container_width=True)
-else:
-    with st.expander("📁 Загрузки"):
-        st.info("Загрузите файлы в соответствующих вкладках")
-
-# Parameters (always available)
-params = get_parameters()
-
-tab_sales, tab_orders, tab_suppliers, tab_params = st.tabs(
-    ["Продажи и прогноз", "Склад и заказы", "Поставщики", "Параметры"]
-)
-
-# Load data for tabs (always render tabs, even right after uploads/reruns)
-trend_weeks_raw = params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4))
-trend_weeks, trend_weeks_validation_error = _parse_trend_weeks(trend_weeks_raw)
+# Load core data
+trend_weeks_raw = normalize_trend_period(params)
+trend_weeks, trend_weeks_validation_error = parse_trend_weeks(trend_weeks_raw)
 if trend_weeks_validation_error:
     trend_weeks = 2
 
-_FORECAST_COLS = [
-    *INTERNAL_FORECAST_COLUMNS,
-]
-_IDEAL_STOCK_COLS = [
-    'sku', 'current_stock',
-    'ideal_stock', 'ideal_stock_2w', 'ideal_stock_3w', 'monthly_ideal_stock',
-    'to_order_week', 'to_order_2w', 'to_order_3w', 'to_order_month',
-]
+forecast_df, stock_df = load_forecast_and_stock(trend_weeks)
+ideal_stock_df, _ = load_ideal_stock_data()
 
-try:
-    forecast_df = get_forecasts(trend_period_weeks=trend_weeks)
-except Exception as _exc:
-    st.error(f"Ошибка при загрузке прогнозов: {_exc}")
-    forecast_df = pd.DataFrame(columns=_FORECAST_COLS)
-
-# Get current stock
-from db_utils import get_current_stock
-try:
-    stock_df = get_current_stock()
-except Exception as _exc:
-    st.error(f"Ошибка при загрузке остатков: {_exc}")
-    stock_df = pd.DataFrame(columns=['sku', 'current_stock'])
-
-# Calculate ideal stock
-try:
-    ideal_stock_df = get_ideal_stock()
-except Exception as _exc:
-    st.error(f"Ошибка при расчёте идеального стока: {_exc}")
-    ideal_stock_df = pd.DataFrame(columns=_IDEAL_STOCK_COLS)
-
+# ============================================================================
+# SALES TAB
+# ============================================================================
 with tab_sales:
     st.subheader("📥 Загрузка логов и списаний")
+    
     uploaded_files = st.file_uploader(
         "Загрузить новые файлы логов",
         type=["xlsx"],
@@ -263,127 +110,117 @@ with tab_sales:
         key="spoils_file"
     )
 
-    current_logs_selection_signatures = tuple(sorted(
-        sig for sig in (_uploaded_file_signature(f) for f in (uploaded_files or [])) if sig is not None
+    current_logs_sigs = tuple(sorted(
+        getattr(f, 'file_id', '') + "|" + getattr(f, 'name', '') + "|" + str(getattr(f, 'size', ''))
+        for f in (uploaded_files or [])
     ))
-    if current_logs_selection_signatures != st.session_state.get('logs_uploader_selection_signatures', tuple()):
-        # New uploader selection should be processed once, even if filenames already exist in DB.
-        st.session_state['logs_uploader_selection_signatures'] = current_logs_selection_signatures
+    
+    if current_logs_sigs != st.session_state.get('logs_uploader_selection_signatures', tuple()):
+        st.session_state['logs_uploader_selection_signatures'] = current_logs_sigs
         st.session_state['processed_log_upload_signatures'] = set()
 
     if uploaded_files:
-        logs_data_changed = False
-        for file in uploaded_files:
-            file_signature = _uploaded_file_signature(file)
-            if file_signature in st.session_state['processed_log_upload_signatures']:
-                continue
-            try:
-                parse_and_save_file(file)
-                invalidate_forecast_cache()
-                invalidate_ideal_stock_cache()
-                if file_signature is not None:
-                    st.session_state['processed_log_upload_signatures'].add(file_signature)
-                logs_data_changed = True
-            except Exception as e:
-                st.error(f"Ошибка при обработке файла {file.name}: {str(e)}")
-        if logs_data_changed:
+        updated_sigs, logs_changed, error_msg = process_logs_upload(
+            uploaded_files,
+            st.session_state['processed_log_upload_signatures']
+        )
+        st.session_state['processed_log_upload_signatures'] = updated_sigs
+        if error_msg:
+            st.error(error_msg)
+        elif logs_changed:
             st.rerun()
 
     if spoils_file is not None:
-        spoils_signature = _uploaded_file_signature(spoils_file)
-        if spoils_signature != st.session_state.get('processed_spoils_upload_signature'):
-            try:
-                parse_and_save_spoils_file(spoils_file)
-                invalidate_forecast_cache()
-                invalidate_ideal_stock_cache()
-                st.session_state['processed_spoils_upload_signature'] = spoils_signature
-                st.rerun()
-            except Exception as e:
-                st.error(f"Ошибка при обработке файла списаний {spoils_file.name}: {str(e)}")
+        new_sig, spoils_changed, error_msg = process_spoils_upload(
+            spoils_file,
+            st.session_state.get('processed_spoils_upload_signature')
+        )
+        st.session_state['processed_spoils_upload_signature'] = new_sig
+        if error_msg:
+            st.error(error_msg)
+        elif spoils_changed:
+            st.rerun()
 
     st.divider()
 
-    if has_spoils_file and not has_logs_files:
+    if has_spoils and not has_logs:
         st.warning(
             "Загружен файл списаний, но не загружены файлы логов. "
             "Загрузите логи, чтобы корректно рассчитать net sales и прогноз."
         )
 
-    if not has_spoils_file:
+    if not has_spoils:
         st.warning(
             "Прогноз сейчас рассчитывается без учета списаний. "
             "Пожалуйста, загрузите файл списаний."
         )
 
     if not forecast_df.empty:
-            st.subheader("📈 Прогноз продаж")
+        st.subheader("📈 Прогноз продаж")
 
-            if trend_weeks_validation_error:
-                st.warning(
-                    "Параметр периода тренда в БД невалиден. "
-                    "Используется безопасное значение 2 недели. "
-                    f"Детали: {trend_weeks_validation_error}"
-                )
-
-            whole_period_days = max(1, trend_weeks * 7)
-
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.write("")
-            with col2:
-                if st.button("Обновить прогноз", key="refresh_forecast"):
-                    recalc_errors = _validate_forecast_recalc_inputs(trend_weeks, latest_logs_processed_date)
-                    if recalc_errors:
-                        for err in recalc_errors:
-                            st.error(err)
-                    else:
-                        invalidate_forecast_cache()
-                        st.success("Кэш прогноза очищен, выполняется перерасчет")
-                        st.rerun()
-
-            if latest_logs_processed_date is not None:
-                st.info(
-                    f"В прогнозе учтены данные логов по дату: {latest_logs_processed_date.strftime('%d.%m.%Y')}"
-                )
-            else:
-                st.info("В прогнозе пока нет даты из обработанных файлов логов.")
-
-            st.caption(
-                f"Сейчас прогноз и whole_period_sales рассчитываются по данным за последние "
-                f"{trend_weeks} нед. ({whole_period_days} дней). Изменить период можно во вкладке "
-                f"\"Параметры\"."
+        if trend_weeks_validation_error:
+            st.warning(
+                "Параметр периода тренда в БД невалиден. "
+                "Используется безопасное значение 2 недели. "
+                f"Детали: {trend_weeks_validation_error}"
             )
 
-            display_forecast_df = forecast_df.copy()
-            display_forecast_df = build_forecast_display_df(display_forecast_df)
+        whole_period_days = max(1, trend_weeks * 7)
 
-            st.dataframe(display_forecast_df)
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.write("")
+        with col2:
+            if st.button("Обновить прогноз", key="refresh_forecast"):
+                recalc_errors, should_rerun = validate_and_refresh_forecast(trend_weeks, latest_logs_date)
+                if recalc_errors:
+                    for err in recalc_errors:
+                        st.error(err)
+                elif should_rerun:
+                    st.success("Кэш прогноза очищен, выполняется перерасчет")
+                    st.rerun()
 
-            popular_threshold = st.number_input(
-                "Порог популярности (продаж за период)",
-                min_value=0,
-                value=get_default_popular_threshold(trend_weeks),
-                step=1
+        if latest_logs_date is not None:
+            st.info(
+                f"В прогнозе учтены данные логов по дату: {latest_logs_date.strftime('%d.%m.%Y')}"
             )
+        else:
+            st.info("В прогнозе пока нет даты из обработанных файлов логов.")
 
-            sales_view_model = build_sales_view_model(
-                forecast_df=forecast_df,
-                stock_df=stock_df,
-                popular_threshold=popular_threshold,
-            )
-            popular = sales_view_model.popular_df
-            no_demand = sales_view_model.no_demand_df
+        st.caption(
+            f"Сейчас прогноз и whole_period_sales рассчитываются по данным за последние "
+            f"{trend_weeks} нед. ({whole_period_days} дней). Изменить период можно во вкладке "
+            f"\"Параметры\"."
+        )
 
-            col_popular, col_no_demand = st.columns([3, 2])
-            with col_popular:
-                st.subheader("🔥 Популярные товары")
-                st.dataframe(popular.head(20), height=320, use_container_width=True)
-            with col_no_demand:
-                st.subheader("😴 Товары без спроса")
-                st.dataframe(no_demand, height=320, use_container_width=True)
+        display_forecast_df = forecast_df.copy()
+        display_forecast_df = build_forecast_display_df(display_forecast_df)
+        st.dataframe(display_forecast_df)
+
+        popular_threshold = st.number_input(
+            "Порог популярности (продаж за период)",
+            min_value=0,
+            value=get_default_popular_threshold(trend_weeks),
+            step=1
+        )
+
+        sales_view_model = prepare_sales_view_data(forecast_df, stock_df, popular_threshold)
+        popular = sales_view_model.popular_df
+        no_demand = sales_view_model.no_demand_df
+
+        col_popular, col_no_demand = st.columns([3, 2])
+        with col_popular:
+            st.subheader("🔥 Популярные товары")
+            st.dataframe(popular.head(20), height=320, use_container_width=True)
+        with col_no_demand:
+            st.subheader("😴 Товары без спроса")
+            st.dataframe(no_demand, height=320, use_container_width=True)
     else:
         st.warning("Нет данных для прогноза")
 
+# ============================================================================
+# ORDERS TAB
+# ============================================================================
 with tab_orders:
     st.subheader("📥 Загрузка прайс-листа")
 
@@ -409,138 +246,131 @@ with tab_orders:
     )
 
     if price_list_file is not None:
-        price_signature = _uploaded_file_signature(price_list_file)
-        if price_signature != st.session_state.get('processed_price_upload_signature'):
-            try:
-                parse_and_save_price_list_file(price_list_file)
-                st.session_state['processed_price_upload_signature'] = price_signature
-                st.rerun()
-            except Exception as e:
-                st.error(f"Ошибка при обработке прайс-листа {price_list_file.name}: {str(e)}")
+        new_sig, price_changed, error_msg = process_price_list_upload(
+            price_list_file,
+            st.session_state.get('processed_price_upload_signature')
+        )
+        st.session_state['processed_price_upload_signature'] = new_sig
+        if error_msg:
+            st.error(error_msg)
+        elif price_changed:
+            st.rerun()
 
     st.divider()
 
-    if has_price_file and not has_logs_files:
+    if has_price and not has_logs:
         st.warning(
             "Загружен прайс-лист, но не загружены файлы логов. "
             "Сначала загрузите логи, чтобы сформировать основной список товаров и корректные заказы."
         )
 
     if not ideal_stock_df.empty:
-            st.subheader("📦 Склад")
+        st.subheader("📦 Склад")
 
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.write("")
-            with col2:
-                if st.button("Обновить заказы", key="refresh_orders"):
-                    invalidate_ideal_stock_cache()
-                    st.success("Кэш заказов очищен, выполняется перерасчет")
-                    st.rerun()
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.write("")
+        with col2:
+            if st.button("Обновить заказы", key="refresh_orders"):
+                refresh_orders_cache()
+                st.success("Кэш заказов очищен, выполняется перерасчет")
+                st.rerun()
 
-            _period_ideal_col = {1: 'ideal_stock', 2: 'ideal_stock_2w', 3: 'ideal_stock_3w', 4: 'monthly_ideal_stock'}
-            _active_to_order = ORDER_PERIOD_TO_ORDER_COLUMN.get(order_period_weeks, 'to_order_month')
-            _active_ideal = _period_ideal_col.get(order_period_weeks, 'monthly_ideal_stock')
-            if _active_to_order not in ideal_stock_df.columns:
-                _active_to_order = 'to_order_month'
-            if _active_ideal not in ideal_stock_df.columns:
-                _active_ideal = 'monthly_ideal_stock'
+        order_df, active_to_order, active_ideal = prepare_order_display_data(ideal_stock_df, order_period_weeks)
+        
+        if not order_df.empty:
+            def highlight_row(row):
+                to_order_value = float(row.get(active_to_order, 0) or 0)
+                current_stock = float(row.get('current_stock', 0) or 0)
 
-            order_df = ideal_stock_df.loc[ideal_stock_df[_active_to_order] > 0]
-            if not order_df.empty:
-                def highlight_row(row):
-                    to_order_value = float(row.get(_active_to_order, 0) or 0)
-                    current_stock = float(row.get('current_stock', 0) or 0)
-
-                    if current_stock == 0:
-                        return ['background-color: rgba(255, 0, 0, 0.3)'] * len(row)
-                    if to_order_value <= 0:
-                        return [''] * len(row)
-
-                    stock_to_order_ratio = current_stock / to_order_value
-                    if stock_to_order_ratio <= 0.25:
-                        return ['background-color: rgba(255, 0, 0, 0.3)'] * len(row)
-                    if stock_to_order_ratio <= 0.5:
-                        return ['background-color: rgba(255, 255, 0, 0.3)'] * len(row)
+                if current_stock == 0:
+                    return ['background-color: rgba(255, 0, 0, 0.3)'] * len(row)
+                if to_order_value <= 0:
                     return [''] * len(row)
 
-                styled_df = order_df[[
-                    "sku",
-                    "current_stock",
-                    _active_ideal,
-                    _active_to_order,
-                ]].style.apply(highlight_row, axis=1)
+                stock_to_order_ratio = current_stock / to_order_value
+                if stock_to_order_ratio <= 0.25:
+                    return ['background-color: rgba(255, 0, 0, 0.3)'] * len(row)
+                if stock_to_order_ratio <= 0.5:
+                    return ['background-color: rgba(255, 255, 0, 0.3)'] * len(row)
+                return [''] * len(row)
 
-                st.dataframe(styled_df)
+            styled_df = order_df[[
+                "sku",
+                "current_stock",
+                active_ideal,
+                active_to_order,
+            ]].style.apply(highlight_row, axis=1)
 
-                st.subheader("🧾 Рекомендуемые заказы")
-                orders_view = build_orders_view_model(
-                    order_df,
-                    period_weeks=order_period_weeks,
-                )
-                recommended_orders = orders_view.recommended_orders
-                missing_supplier_skus = orders_view.missing_supplier_skus
-                below_min_map = orders_view.below_min_map
-                zero_price_map = orders_view.zero_price_map
+            st.dataframe(styled_df)
 
-                if missing_supplier_skus:
-                    st.warning("Не найден поставщик для следующих товаров:")
-                    st.dataframe(pd.DataFrame({'Товар': missing_supplier_skus}), height=140, use_container_width=True)
+            st.subheader("🧾 Рекомендуемые заказы")
+            orders_view = build_orders_view(order_df, order_period_weeks)
+            recommended_orders = orders_view.recommended_orders
+            missing_supplier_skus = orders_view.missing_supplier_skus
+            below_min_map = orders_view.below_min_map
+            zero_price_map = orders_view.zero_price_map
 
-                if recommended_orders:
-                    for order in recommended_orders:
-                        has_min_warning = order['supplier_name'] in below_min_map
-                        has_zero_price_warning = order['supplier_name'] in zero_price_map
-                        has_no_supplier_warning = bool(order.get('is_without_supplier'))
+            if missing_supplier_skus:
+                st.warning("Не найден поставщик для следующих товаров:")
+                st.dataframe(pd.DataFrame({'Товар': missing_supplier_skus}), height=140, use_container_width=True)
+
+            if recommended_orders:
+                for order in recommended_orders:
+                    has_min_warning = order['supplier_name'] in below_min_map
+                    has_zero_price_warning = order['supplier_name'] in zero_price_map
+                    has_no_supplier_warning = bool(order.get('is_without_supplier'))
+                    if has_no_supplier_warning:
+                        label = f"❗ Без поставщика | {format_rub_amount(order['total_cost'])} ₽"
+                    else:
+                        base_label = (
+                            f"{order['supplier_name']} | "
+                            f"{format_rub_amount(order['total_cost'])} ₽ | "
+                            f"Срок: {format_delivery_time_ru(order['delivery_time'])}"
+                        )
+                        label = f"❗ {base_label}" if (has_min_warning or has_zero_price_warning) else base_label
+
+                    with st.expander(label, expanded=False):
                         if has_no_supplier_warning:
-                            label = f"❗ Без поставщика | {_format_rub_amount(order['total_cost'])} ₽"
-                        else:
-                            base_label = (
-                                f"{order['supplier_name']} | "
-                                f"{_format_rub_amount(order['total_cost'])} ₽ | "
-                                f"Срок: {_format_delivery_time_ru(order['delivery_time'])}"
+                            st.warning(
+                                "В прайс-листе указан поставщик 'Без поставщика' - "
+                                "эти позиции требуют назначения реального поставщика."
                             )
-                            label = f"❗ {base_label}" if (has_min_warning or has_zero_price_warning) else base_label
-
-                        with st.expander(label, expanded=False):
-                            if has_no_supplier_warning:
-                                st.warning(
-                                    "В прайс-листе указан поставщик 'Без поставщика' - "
-                                    "эти позиции требуют назначения реального поставщика."
-                                )
-                            if has_min_warning:
-                                warn = below_min_map[order['supplier_name']]
-                                st.warning(
-                                    "Сумма заказа без доставки ниже минимальной суммы заказа: "
-                                    f"{warn['subtotal_without_delivery']:.2f} ₽ < {warn['min_order']:.2f} ₽"
-                                )
-                            if has_zero_price_warning:
-                                zero_warn = zero_price_map[order['supplier_name']]
-                                items_text = ", ".join(zero_warn['items'])
-                                st.warning(
-                                    "Для одного или нескольких товаров в загруженном прайс-листе указана нулевая цена: "
-                                    f"{items_text}."
-                                )
-                            st.write(
-                                f"Стоимость товаров: {order['subtotal_without_delivery']:.2f} ₽ | "
-                                f"Доставка: {order['delivery_cost']:.2f} ₽ | "
-                                f"Итого: {order['total_cost']:.2f} ₽"
+                        if has_min_warning:
+                            warn = below_min_map[order['supplier_name']]
+                            st.warning(
+                                "Сумма заказа без доставки ниже минимальной суммы заказа: "
+                                f"{warn['subtotal_without_delivery']:.2f} ₽ < {warn['min_order']:.2f} ₽"
                             )
-                            st.dataframe(pd.DataFrame(order['items']), use_container_width=True)
-                else:
-                    st.info("Недостаточно данных прайс-листа для формирования рекомендуемых заказов")
+                        if has_zero_price_warning:
+                            zero_warn = zero_price_map[order['supplier_name']]
+                            items_text = ", ".join(zero_warn['items'])
+                            st.warning(
+                                "Для одного или нескольких товаров в загруженном прайс-листе указана нулевая цена: "
+                                f"{items_text}."
+                            )
+                        st.write(
+                            f"Стоимость товаров: {order['subtotal_without_delivery']:.2f} ₽ | "
+                            f"Доставка: {order['delivery_cost']:.2f} ₽ | "
+                            f"Итого: {order['total_cost']:.2f} ₽"
+                        )
+                        st.dataframe(pd.DataFrame(order['items']), use_container_width=True)
             else:
-                st.info("Нет товаров для заказа на эту неделю")
+                st.info("Недостаточно данных прайс-листа для формирования рекомендуемых заказов")
+        else:
+            st.info("Нет товаров для заказа на эту неделю")
     else:
         st.warning("Нет данных об остатках")
 
+# ============================================================================
+# SUPPLIERS TAB
+# ============================================================================
 with tab_suppliers:
     st.subheader("🧾 Поставщики")
 
-    suppliers_df = get_suppliers()
+    suppliers_df, display_df = load_suppliers_data()
+    
     if not suppliers_df.empty:
-        display_df = build_suppliers_display_df(suppliers_df)
-
         edited = st.data_editor(
             display_df,
             num_rows='fixed',
@@ -550,20 +380,14 @@ with tab_suppliers:
             }
         )
 
-        changes = detect_supplier_changes(display_df, edited)
-
-        if changes:
+        has_changes, changes, error_msg = process_supplier_changes(display_df, edited)
+        
+        if error_msg:
+            st.error(error_msg)
+        elif has_changes:
             col1, col2 = st.columns(2)
             with col1:
                 if st.button('Сохранить изменения'):
-                    normalized = normalize_suppliers_for_save(edited)
-                    for _, row in normalized.iterrows():
-                        update_supplier_info(
-                            row['name'],
-                            row['delivery_cost'],
-                            row['delivery_time'],
-                            row['min_order']
-                        )
                     st.success('Изменения поставщиков сохранены')
                     st.rerun()
             with col2:
@@ -575,13 +399,18 @@ with tab_suppliers:
     else:
         st.info("Нет данных по поставщикам")
 
+# ============================================================================
+# PARAMETERS TAB
+# ============================================================================
 with tab_params:
     st.subheader("Параметры расчёта")
+    
     if trend_weeks_validation_error:
         st.warning(
             "Текущее значение периода тренда невалидно и будет заменено при сохранении. "
             f"Детали: {trend_weeks_validation_error}"
         )
+    
     new_quote = st.number_input(
         "Коэффициент запаса",
         min_value=0.1,
@@ -604,29 +433,17 @@ with tab_params:
     st.caption("Допустимо только целое положительное значение, минимум 2.")
 
     if st.button("Сохранить параметры"):
-        try:
-            validated_trend_weeks, trend_error = _parse_trend_weeks(new_trend_period)
-            if trend_error:
-                st.error(trend_error)
-            else:
-                update_parameters({
-                    'quote_multiplicator': new_quote,
-                    'min_items_in_stock': new_min_stock,
-                    'trend_period_weeks': validated_trend_weeks,
-                })
-                
-                # Invalidate all caches to force recalculation
-                invalidate_forecast_cache()
-                invalidate_ideal_stock_cache()
-                
-                # Show status message
-                st.success("✓ Параметры сохранены")
-                st.info("Выполняется пересчет прогнозов и всех связанных таблиц...")
-                
-                # Trigger full app rerun with new parameters
-                st.rerun()
-        except Exception as e:
-            st.error(f"Не удалось сохранить параметры: {e}")
+        is_valid, error_msg, should_rerun = validate_and_save_parameters(
+            new_quote,
+            new_min_stock,
+            new_trend_period
+        )
+        if not is_valid:
+            st.error(error_msg)
+        else:
+            st.success("✓ Параметры сохранены")
+            st.info("Выполняется пересчет прогнозов и всех связанных таблиц...")
+            st.rerun()
 
     st.divider()
     st.markdown("### Опасная зона")
@@ -648,9 +465,6 @@ with tab_params:
         unsafe_allow_html=True,
     )
 
-    if 'reset_db_requested' not in st.session_state:
-        st.session_state['reset_db_requested'] = False
-
     if st.button("Сбросить БД", type="primary"):
         st.session_state.pop('confirm_reset_db', None)
         st.session_state['reset_db_requested'] = True
@@ -662,13 +476,13 @@ with tab_params:
 
         with col_confirm:
             if st.button("Подтвердить сброс", type="primary", disabled=not confirm_reset):
-                try:
-                    reset_database_data()
+                success, error_msg = process_database_reset()
+                if success:
                     st.session_state['reset_db_requested'] = False
                     st.success("База данных успешно сброшена")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Не удалось сбросить БД: {e}")
+                else:
+                    st.error(error_msg)
 
         with col_cancel:
             if st.button("Отмена сброса"):
