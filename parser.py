@@ -160,19 +160,6 @@ def is_date_column(col_name):
     return bool(re.match(r"\d{2}\.\d{2}\.\d{4}(\.1)?$", str(col_name)))
 
 
-def parse_column_name(col_name):
-    """
-    Возвращает:
-    (date_str, is_outbound)
-    """
-    col_name = str(col_name)
-
-    if col_name.endswith(".1"):
-        return col_name[:-2], True  # расход
-
-    return col_name, False  # приход
-
-
 def compute_inventory_balance(df):
     """Добавляет колонку остатка на складе по накоплению прихода и расхода."""
     if df.empty:

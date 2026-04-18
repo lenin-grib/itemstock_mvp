@@ -3,10 +3,6 @@ import numpy as np
 from db_utils import get_current_stock, get_parameters
 from cache_service import get_cached_ideal_stock, save_ideal_stock_cache, invalidate_ideal_stock_cache
 
-# --- Константы ---
-quote_multiplicator = 1.5
-min_items_in_stock = 5
-
 
 def _optimize_ideal_stock_dtypes(df):
     if df.empty:

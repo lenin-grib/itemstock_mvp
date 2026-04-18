@@ -28,16 +28,35 @@ The app calculates:
 
 ## Project Structure
 
-- `app.py` - Streamlit UI and workflow orchestration
+### Presentation Layer
+- `app.py` - Streamlit UI orchestration (presentation-only, delegates to controllers)
+- `ui_helpers.py` - Shared UI utilities (formatting, validation, i18n)
+
+### Controller Layer (Business Workflow Orchestration)
+- `sales_tab_controller.py` - Orchestrates sales tab (logs/spoils upload, forecast display)
+- `orders_tab_controller.py` - Orchestrates orders tab (price upload, ideal stock, orders display)
+- `suppliers_tab_controller.py` - Orchestrates suppliers tab (edit, detect changes, persist)
+- `params_tab_controller.py` - Orchestrates parameters tab (load, validate, save, reset)
+
+### Business Logic & Data Processing
 - `parser.py` - Parsing and validation of uploaded Excel files
-- `forecast.py` - Forecast model and metrics
+- `forecast.py` - Forecast model and metrics calculation
 - `ideal_stock.py` - Ideal stock and reorder quantity calculations
 - `order_service.py` - Supplier-based recommendation builder
 - `supplier_service.py` - Supplier and price-list ingestion
-- `database.py` / `db_utils.py` - Models, DB setup, and data access helpers
-- `cache_service.py` - Cache persistence helpers
+- `sales_view_service.py` - Sales view data model builder (popular/no-demand products)
+- `orders_view_service.py` - Orders view data model builder (recommended orders)
+- `suppliers_view_service.py` - Suppliers view data model builder (display/edit)
+- `forecast_schema.py` - Forecast column definitions and display formatting
+
+### Data Layer
+- `database.py` - SQLAlchemy ORM models and schema initialization
+- `db_utils.py` - Session management, data loading/saving, parameters
+- `cache_service.py` - Forecast and ideal-stock cache persistence
+
+### Utilities & Infrastructure
 - `scripts/backfill_uploaded_file_ranges.py` - Backfill utility for uploaded file date ranges
-- `k8s/` - Kubernetes deployment manifests
+- `k8s/` - Kubernetes deployment manifests (Deployment, Service, PVC, Ingress, ClusterIssuer)
 
 ## Architecture Diagram
 
@@ -46,59 +65,72 @@ flowchart LR
   U[User in Browser]
   A[Streamlit UI\napp.py]
 
-  subgraph Ingestion
-    P[parser.py\nWarehouse logs and spoils]
-    S[supplier_service.py\nSuppliers and price list]
+  subgraph Controllers
+    SC["sales_tab_controller.py\nLogs/spoils upload\nForecast display"]
+    OC["orders_tab_controller.py\nPrice upload\nIdeal stock display"]
+    SUC["suppliers_tab_controller.py\nSupplier edit/persist"]
+    PC["params_tab_controller.py\nParameters update"]
   end
 
-  subgraph CoreLogic
-    F[forecast.py\nSales forecast]
-    I[ideal_stock.py\nIdeal stock and reorder]
-    O[order_service.py\nSupplier grouped orders]
+  subgraph ViewServices
+    SVS["sales_view_service.py\nPopular/no-demand data"]
+    OVS["orders_view_service.py\nRecommended orders"]
+    SUVS["suppliers_view_service.py\nDisplay/edit data"]
+  end
+
+  subgraph BusinessLogic
+    P["parser.py\nExcel parsing"]
+    F["forecast.py\nForecast calculation"]
+    I["ideal_stock.py\nIdeal stock calc"]
+    O["order_service.py\nOrder grouping"]
+    S["supplier_service.py\nSupplier mgmt"]
   end
 
   subgraph DataLayer
-    D[database.py and db_utils.py\nSQLAlchemy ORM]
+    D["database.py + db_utils.py\nSQLAlchemy ORM"]
+    C["cache_service.py\nForecast/stock cache"]
     DB[(SQLite\napp.db)]
-    C[cache_service.py\nCached forecasts and stocks]
   end
 
   U --> A
-
-  A --> P
-  A --> S
+  
+  A --> SC
+  A --> OC
+  A --> SUC
+  A --> PC
+  
+  SC --> P
+  SC --> F
+  OC --> F
+  OC --> I
+  OC --> O
+  SUC --> S
+  PC --> D
+  
+  SC --> SVS
+  OC --> OVS
+  SUC --> SUVS
+  
   P --> D
   S --> D
-  D --> DB
-
-  A --> F
-  A --> I
-  A --> O
-
   F --> D
   I --> D
   O --> D
-
+  
   F <--> C
   I <--> C
-  C --> DB
-
-  subgraph Runtime
-    K8S[Kubernetes\nDeployment, Service, Ingress, PVC]
-    DOCKER[Docker container\nStreamlit on 8501]
-  end
-
-  DOCKER --> A
-  K8S --> DOCKER
+  
+  D <--> DB
+  C <--> DB
 ```
 
 High-level flow:
 
-- Users interact with the Streamlit app.
-- Uploaded Excel files are parsed and persisted via SQLAlchemy into SQLite.
-- Forecast and stock modules read historical data, compute recommendations, and store cache entries.
-- Order recommendations are built from ideal stock plus supplier and price-list data.
-- The app runs in Docker and can be exposed through Kubernetes Ingress.
+- Users interact with the Streamlit app (`app.py`).
+- App delegates workflows to tab controllers (sales, orders, suppliers, params).
+- Controllers orchestrate business logic (parser, forecast, ideal_stock, order_service, supplier_service) and view builders.
+- Business logic modules read/write data via the data layer.
+- Data layer persists to SQLite and manages caches for forecast and ideal stock.
 
 ## Data Inputs
 
@@ -183,6 +215,22 @@ streamlit run app.py
 
 Open http://localhost:8501
 
+## Testing
+
+Run all tests with:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+Test suite includes:
+
+- **Smoke tests** (`tests/test_smoke_core.py`) - Unit tests with mocking for forecast, ideal_stock, orders, suppliers
+- **Integration tests** (`tests/test_integration_workflows.py`) - Real SQLite tests for:
+  - Startup database migrations (legacy schema handling)
+  - Upload workflows (logs, spoils, price list parsing and storage)
+  - SQLite lock retry and concurrent write scenarios
+
 ## Docker
 
 Build and run locally:
@@ -232,6 +280,40 @@ python scripts/backfill_uploaded_file_ranges.py --dry-run
 python scripts/backfill_uploaded_file_ranges.py
 python scripts/backfill_uploaded_file_ranges.py --recompute-all
 ```
+
+## Architecture & Design
+
+### Layered Architecture
+
+The application follows a clean layered architecture:
+
+1. **Presentation Layer** (`app.py`, `ui_helpers.py`)
+   - Pure Streamlit UI orchestration
+   - No business logic in the presentation layer
+   - Delegates all workflows to controllers
+
+2. **Controller Layer** (tab controllers)
+   - Orchestrates business workflows for each UI tab
+   - No Streamlit dependencies (fully testable)
+   - Returns tuples with (data, should_rerun, error_msg) for UI decision-making
+
+3. **Business Logic Layer** (forecast, ideal_stock, order_service, etc.)
+   - Core calculations and algorithms
+   - Service modules for specific domains (supplier, forecast, stock)
+   - View service builders for UI-ready data models
+
+4. **Data Layer** (database, db_utils, cache_service)
+   - SQLAlchemy ORM and session management
+   - Data access helpers (getters/setters)
+   - Cache persistence for expensive calculations
+
+### Key Design Principles
+
+- **Separation of Concerns**: Each module has a single responsibility
+- **Testability**: Controllers and business logic have no Streamlit dependencies
+- **Caching**: Forecast and ideal-stock calculations are cached to improve UI response time
+- **Migrations**: Lightweight startup migrations for schema evolution
+- **Error Handling**: Retry logic for SQLite lock scenarios, exception-safe data loading
 
 ## Notes
 

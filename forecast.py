@@ -4,7 +4,6 @@ from db_utils import get_net_sales_data, get_all_skus
 from cache_service import get_cached_forecasts, save_forecast_cache
 from forecast_schema import INTERNAL_FORECAST_COLUMNS
 
-
 FORECAST_COLUMNS = INTERNAL_FORECAST_COLUMNS
 
 

@@ -4,7 +4,7 @@ import streamlit as st
 st.set_page_config(layout="wide")
 
 from database import init_db
-from forecast_schema import INTERNAL_FORECAST_COLUMNS, build_forecast_display_df
+from forecast_schema import build_forecast_display_df
 from sales_view_service import get_default_popular_threshold
 from ui_helpers import (
     file_type_and_name,
@@ -12,7 +12,6 @@ from ui_helpers import (
     format_rub_amount,
     format_delivery_time_ru,
     parse_trend_weeks,
-    validate_forecast_recalc_inputs,
 )
 from sales_tab_controller import (
     get_uploaded_file_metadata,
