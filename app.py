@@ -37,6 +37,10 @@ uploaded_log_files = [
     f for f in normalized_uploaded_files
     if str(f[2] or 'logs') == 'logs'
 ]
+latest_logs_processed_date = max(
+    (f[5] for f in uploaded_log_files if f[5] is not None),
+    default=None,
+)
 has_spoils_file = any(str(f[2] or 'logs') == 'spoils' for f in normalized_uploaded_files)
 uploaded_filenames = [f[1] for f in uploaded_log_files] if uploaded_log_files else []
 
@@ -236,6 +240,13 @@ with tab_sales:
                     st.success("Кэш прогноза очищен, выполняется перерасчет")
                     st.rerun()
 
+            if latest_logs_processed_date is not None:
+                st.info(
+                    f"В прогнозе учтены данные логов по дату: {latest_logs_processed_date.strftime('%d.%m.%Y')}"
+                )
+            else:
+                st.info("В прогнозе пока нет даты из обработанных файлов логов.")
+
             display_forecast_df = forecast_df.copy()
             if 'last_updated' in display_forecast_df.columns:
                 display_forecast_df = display_forecast_df.drop(columns=['last_updated'])
@@ -324,7 +335,7 @@ with tab_orders:
     st.divider()
 
     if not ideal_stock_df.empty:
-            st.subheader("📦 Заказы")
+            st.subheader("📦 Склад")
 
             col1, col2 = st.columns([3, 1])
             with col1:
