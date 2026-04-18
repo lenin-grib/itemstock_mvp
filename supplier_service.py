@@ -8,7 +8,6 @@ from database import (
     PriceListItem,
     Product,
     Supplier,
-    SupplierItem,
     UploadedFile,
 )
 
@@ -32,66 +31,6 @@ def _upsert_uploaded_file(session, filename, file_type, date_from=None, date_to=
     session.add(uploaded)
     session.flush()
     return uploaded
-
-
-def _is_without_supplier_name(name):
-    return str(name or '').strip().lower() == 'без поставщика'
-
-
-def save_supplier_file(file):
-    """
-    Parse and save suppliers from a single-sheet file with supplier metadata only.
-    Required columns:
-      поставщик, контакт, срок доставки, цена доставки, минимальный заказ
-    Also stores file record in uploaded_files with upload date as date range.
-    """
-    df = pd.read_excel(file)
-    if df.empty:
-        raise ValueError("Файл поставщиков пуст")
-
-    df.columns = [str(col).strip().lower() for col in df.columns]
-    required_cols = ['поставщик', 'контакт', 'срок доставки', 'цена доставки', 'минимальный заказ']
-    for col in required_cols:
-        if col not in df.columns:
-            raise ValueError(f"В файле поставщиков не найдена колонка: {col}")
-
-    session = get_session()
-    try:
-        now_date = datetime.now().date()
-        filename = f"suppliers::{getattr(file, 'name', 'unknown_suppliers_file')}"
-        _upsert_uploaded_file(session, filename, file_type='suppliers', date_from=now_date, date_to=now_date)
-
-        for _, row in df.iterrows():
-            name = str(row.get('поставщик', '')).strip()
-            if not name:
-                continue
-            if _is_without_supplier_name(name):
-                continue
-
-            contact = str(row.get('контакт', '')).strip()
-            delivery_time = str(row.get('срок доставки', '')).strip()
-            delivery_cost = float(row.get('цена доставки', 0) or 0)
-            min_order = float(row.get('минимальный заказ', 0) or 0)
-
-            supplier = session.query(Supplier).filter_by(name=name).first()
-            if not supplier:
-                supplier = Supplier(
-                    name=name,
-                    contact=contact,
-                    delivery_cost=delivery_cost,
-                    delivery_time=delivery_time,
-                    min_order=min_order,
-                )
-                session.add(supplier)
-            else:
-                supplier.contact = contact
-                supplier.delivery_cost = delivery_cost
-                supplier.delivery_time = delivery_time
-                supplier.min_order = min_order
-
-        session.commit()
-    finally:
-        session.close()
 
 
 def save_price_list_file(file):
@@ -240,28 +179,5 @@ def update_supplier_info(name, delivery_cost, delivery_time, min_order):
             supplier.delivery_time = str(delivery_time or '')
             supplier.min_order = float(min_order or 0)
             session.commit()
-    finally:
-        session.close()
-
-
-def get_supplier_items(supplier_name=None):
-    """
-    Get supplier items, optionally filtered by supplier name.
-    Returns DataFrame with item details.
-    """
-    session = get_session()
-    try:
-        query = session.query(SupplierItem, Supplier.name).join(Supplier)
-        if supplier_name:
-            query = query.filter(Supplier.name == supplier_name)
-        data = []
-        for item, supplier_name in query.all():
-            data.append({
-                'supplier_name': supplier_name,
-                'sku': item.sku,
-                'price': item.price,
-                'packaging': item.packaging
-            })
-        return pd.DataFrame(data) if data else pd.DataFrame()
     finally:
         session.close()

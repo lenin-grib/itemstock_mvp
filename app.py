@@ -3,12 +3,12 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-from db_utils import get_parameters, get_uploaded_files, update_parameter, update_parameters, reset_database_data, get_all_skus
+from db_utils import get_parameters, get_uploaded_files, update_parameters, reset_database_data, get_all_skus, get_net_sales_data
 from parser import parse_and_save_file, parse_and_save_spoils_file, parse_and_save_price_list_file
 from forecast import get_forecasts
 from forecast_schema import INTERNAL_FORECAST_COLUMNS, build_forecast_display_df
-from ideal_stock import get_ideal_stock, calculate_ideal_stock
-from order_service import build_recommended_orders
+from ideal_stock import get_ideal_stock
+from order_service import build_recommended_orders, ORDER_PERIOD_TO_ORDER_COLUMN
 from supplier_service import get_suppliers, update_supplier_info
 from cache_service import invalidate_forecast_cache, invalidate_ideal_stock_cache
 from database import init_db
@@ -133,6 +133,59 @@ def _format_delivery_time_ru(delivery_time):
 
     return raw_value
 
+
+def _parse_trend_weeks(value):
+    if value is None:
+        return None, "Период тренда не задан. Допустимо только целое положительное значение, минимум 2."
+
+    try:
+        if isinstance(value, str):
+            normalized = value.strip().replace(',', '.')
+            numeric = float(normalized)
+        else:
+            numeric = float(value)
+    except (TypeError, ValueError):
+        return None, "Период тренда должен быть числом. Допустимо только целое положительное значение, минимум 2."
+
+    if not numeric.is_integer():
+        return None, "Период тренда должен быть целым числом. Минимум: 2."
+
+    parsed = int(numeric)
+    if parsed < 2:
+        return None, "Период тренда должен быть не меньше 2 недель."
+
+    return parsed, None
+
+
+def _validate_forecast_recalc_inputs(trend_weeks_value, latest_logs_date):
+    errors = []
+
+    _, trend_error = _parse_trend_weeks(trend_weeks_value)
+    if trend_error:
+        errors.append(trend_error)
+
+    if latest_logs_date is None:
+        errors.append("Нет загруженных логов с датами. Загрузите файл логов перед пересчетом прогноза.")
+
+    try:
+        net_sales_df = get_net_sales_data()
+    except Exception as exc:
+        errors.append(f"Не удалось проверить данные net sales: {exc}")
+        return errors
+
+    required_cols = {'sku', 'date', 'outbound'}
+    missing_cols = required_cols - set(net_sales_df.columns)
+    if missing_cols:
+        errors.append(
+            "В данных net sales отсутствуют обязательные колонки: "
+            + ", ".join(sorted(missing_cols))
+            + "."
+        )
+    elif net_sales_df.empty:
+        errors.append("Нет данных net sales для пересчета прогноза.")
+
+    return errors
+
 if all_uploaded_files:
     with st.expander("📁 Загруженные файлы"):
         file_data = []
@@ -156,7 +209,10 @@ tab_sales, tab_orders, tab_suppliers, tab_params = st.tabs(
 )
 
 # Load data for tabs (always render tabs, even right after uploads/reruns)
-trend_weeks = int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4)))
+trend_weeks_raw = params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4))
+trend_weeks, trend_weeks_validation_error = _parse_trend_weeks(trend_weeks_raw)
+if trend_weeks_validation_error:
+    trend_weeks = 2
 
 _FORECAST_COLS = [
     *INTERNAL_FORECAST_COLUMNS,
@@ -251,6 +307,13 @@ with tab_sales:
     if not forecast_df.empty:
             st.subheader("📈 Прогноз продаж")
 
+            if trend_weeks_validation_error:
+                st.warning(
+                    "Параметр периода тренда в БД невалиден. "
+                    "Используется безопасное значение 2 недели. "
+                    f"Детали: {trend_weeks_validation_error}"
+                )
+
             whole_period_days = max(1, trend_weeks * 7)
 
             col1, col2 = st.columns([3, 1])
@@ -258,9 +321,14 @@ with tab_sales:
                 st.write("")
             with col2:
                 if st.button("Обновить прогноз", key="refresh_forecast"):
-                    invalidate_forecast_cache()
-                    st.success("Кэш прогноза очищен, выполняется перерасчет")
-                    st.rerun()
+                    recalc_errors = _validate_forecast_recalc_inputs(trend_weeks, latest_logs_processed_date)
+                    if recalc_errors:
+                        for err in recalc_errors:
+                            st.error(err)
+                    else:
+                        invalidate_forecast_cache()
+                        st.success("Кэш прогноза очищен, выполняется перерасчет")
+                        st.rerun()
 
             if latest_logs_processed_date is not None:
                 st.info(
@@ -281,7 +349,7 @@ with tab_sales:
             st.dataframe(display_forecast_df)
 
             # Popular and no-demand items: use same period metric as forecast table
-            period_weeks = int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4)))
+            period_weeks = trend_weeks
             all_skus = get_all_skus()
 
             sales_view = forecast_df[['sku', 'whole_period_sales', 'whole_period_forecast']].copy()
@@ -377,9 +445,8 @@ with tab_orders:
                     st.success("Кэш заказов очищен, выполняется перерасчет")
                     st.rerun()
 
-            _period_to_order_col = {1: 'to_order_week', 2: 'to_order_2w', 3: 'to_order_3w', 4: 'to_order_month'}
             _period_ideal_col = {1: 'ideal_stock', 2: 'ideal_stock_2w', 3: 'ideal_stock_3w', 4: 'monthly_ideal_stock'}
-            _active_to_order = _period_to_order_col.get(order_period_weeks, 'to_order_month')
+            _active_to_order = ORDER_PERIOD_TO_ORDER_COLUMN.get(order_period_weeks, 'to_order_month')
             _active_ideal = _period_ideal_col.get(order_period_weeks, 'monthly_ideal_stock')
             if _active_to_order not in ideal_stock_df.columns:
                 _active_to_order = 'to_order_month'
@@ -414,8 +481,10 @@ with tab_orders:
                 st.dataframe(styled_df)
 
                 st.subheader("🧾 Рекомендуемые заказы")
-                recommended_orders, missing_supplier_skus, below_min_warnings = build_recommended_orders(
-                    order_df, period_weeks=order_period_weeks
+                recommended_orders, missing_supplier_skus, below_min_warnings, zero_price_warnings = build_recommended_orders(
+                    order_df,
+                    period_weeks=order_period_weeks,
+                    include_zero_price_warnings=True,
                 )
 
                 if missing_supplier_skus:
@@ -424,6 +493,9 @@ with tab_orders:
 
                 below_min_map = {
                     w['supplier_name']: w for w in below_min_warnings
+                }
+                zero_price_map = {
+                    w['supplier_name']: w for w in zero_price_warnings
                 }
 
                 if recommended_orders:
@@ -434,6 +506,7 @@ with tab_orders:
 
                     for order in recommended_orders:
                         has_min_warning = order['supplier_name'] in below_min_map
+                        has_zero_price_warning = order['supplier_name'] in zero_price_map
                         has_no_supplier_warning = bool(order.get('is_without_supplier'))
                         if has_no_supplier_warning:
                             label = f"❗ Без поставщика | {_format_rub_amount(order['total_cost'])} ₽"
@@ -443,7 +516,7 @@ with tab_orders:
                                 f"{_format_rub_amount(order['total_cost'])} ₽ | "
                                 f"Срок: {_format_delivery_time_ru(order['delivery_time'])}"
                             )
-                            label = f"❗ {base_label}" if has_min_warning else base_label
+                            label = f"❗ {base_label}" if (has_min_warning or has_zero_price_warning) else base_label
 
                         with st.expander(label, expanded=False):
                             if has_no_supplier_warning:
@@ -456,6 +529,13 @@ with tab_orders:
                                 st.warning(
                                     "Сумма заказа без доставки ниже минимальной суммы заказа: "
                                     f"{warn['subtotal_without_delivery']:.2f} ₽ < {warn['min_order']:.2f} ₽"
+                                )
+                            if has_zero_price_warning:
+                                zero_warn = zero_price_map[order['supplier_name']]
+                                items_text = ", ".join(zero_warn['items'])
+                                st.warning(
+                                    "Для одного или нескольких товаров в загруженном прайс-листе указана нулевая цена: "
+                                    f"{items_text}."
                                 )
                             st.write(
                                 f"Стоимость товаров: {order['subtotal_without_delivery']:.2f} ₽ | "
@@ -541,6 +621,11 @@ with tab_suppliers:
 
 with tab_params:
     st.subheader("Параметры расчёта")
+    if trend_weeks_validation_error:
+        st.warning(
+            "Текущее значение периода тренда невалидно и будет заменено при сохранении. "
+            f"Детали: {trend_weeks_validation_error}"
+        )
     new_quote = st.number_input(
         "Коэффициент запаса",
         min_value=0.1,
@@ -556,29 +641,34 @@ with tab_params:
     )
     new_trend_period = st.number_input(
         "Период для расчёта тренда (недели)",
-        min_value=1,
-        value=int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4))),
+        min_value=2,
+        value=trend_weeks,
         step=1
     )
+    st.caption("Допустимо только целое положительное значение, минимум 2.")
 
     if st.button("Сохранить параметры"):
         try:
-            update_parameters({
-                'quote_multiplicator': new_quote,
-                'min_items_in_stock': new_min_stock,
-                'trend_period_weeks': new_trend_period,
-            })
-            
-            # Invalidate all caches to force recalculation
-            invalidate_forecast_cache()
-            invalidate_ideal_stock_cache()
-            
-            # Show status message
-            st.success("✓ Параметры сохранены")
-            st.info("Выполняется пересчет прогнозов и всех связанных таблиц...")
-            
-            # Trigger full app rerun with new parameters
-            st.rerun()
+            validated_trend_weeks, trend_error = _parse_trend_weeks(new_trend_period)
+            if trend_error:
+                st.error(trend_error)
+            else:
+                update_parameters({
+                    'quote_multiplicator': new_quote,
+                    'min_items_in_stock': new_min_stock,
+                    'trend_period_weeks': validated_trend_weeks,
+                })
+                
+                # Invalidate all caches to force recalculation
+                invalidate_forecast_cache()
+                invalidate_ideal_stock_cache()
+                
+                # Show status message
+                st.success("✓ Параметры сохранены")
+                st.info("Выполняется пересчет прогнозов и всех связанных таблиц...")
+                
+                # Trigger full app rerun with new parameters
+                st.rerun()
         except Exception as e:
             st.error(f"Не удалось сохранить параметры: {e}")
 

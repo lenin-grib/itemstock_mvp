@@ -329,67 +329,6 @@ def get_net_sales_data():
         session.close()
 
 
-def get_sales_data():
-    session = get_session()
-    try:
-        sales_query = session.query(Sale, Product.sku).join(Product).all()
-        sales_data = []
-        for sale, sku in sales_query:
-            sales_data.append({'sku': sku, 'date': sale.date, 'outbound': float(sale.quantity or 0)})
-        sales_df = pd.DataFrame(sales_data)
-
-        spoils_query = session.query(Spoil, Product.sku).join(Product).all()
-        spoils_data = []
-        for spoil, sku in spoils_query:
-            spoils_data.append({'sku': sku, 'date': spoil.date, 'spoil_qty': float(spoil.quantity or 0)})
-        spoils_df = pd.DataFrame(spoils_data)
-
-        if sales_df.empty:
-            return pd.DataFrame(columns=['sku', 'date', 'outbound'])
-
-        sales_df['date'] = pd.to_datetime(sales_df['date'])
-
-        if spoils_df.empty:
-            return sales_df
-
-        spoils_df['date'] = pd.to_datetime(spoils_df['date'])
-        spoils_df = spoils_df.groupby(['sku', 'date'], as_index=False)['spoil_qty'].sum()
-
-        merged = sales_df.merge(spoils_df, on=['sku', 'date'], how='left')
-        merged['spoil_qty'] = merged['spoil_qty'].fillna(0)
-        merged['outbound'] = (merged['outbound'] - merged['spoil_qty']).clip(lower=0)
-
-        return merged[['sku', 'date', 'outbound']]
-    finally:
-        session.close()
-
-
-def get_spoils_data():
-    session = get_session()
-    try:
-        query = session.query(Spoil, Product.sku).join(Product).all()
-        data = []
-        for spoil, sku in query:
-            data.append({'sku': sku, 'date': spoil.date, 'quantity': float(spoil.quantity or 0), 'reason': spoil.reason})
-        df = pd.DataFrame(data)
-        if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
-            df = df.sort_values(['date', 'sku', 'reason'], ascending=[False, True, True])
-        return df
-    finally:
-        session.close()
-
-
-def get_approximate_prices():
-    session = get_session()
-    try:
-        prices = session.query(ApproximatePrice).all()
-        data = [{'sku': p.sku, 'price': p.price} for p in prices]
-        return pd.DataFrame(data) if data else pd.DataFrame()
-    finally:
-        session.close()
-
-
 def get_current_stock():
     session = get_session()
     try:
@@ -430,10 +369,6 @@ def get_parameters():
         return {param.key: param.value for param in params}
     finally:
         session.close()
-
-
-def update_parameter(key, value):
-    update_parameters({key: value})
 
 
 def update_parameters(values):

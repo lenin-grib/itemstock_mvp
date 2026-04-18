@@ -6,6 +6,14 @@ from db_utils import get_session
 from database import PriceListItem, Product, Supplier
 
 
+ORDER_PERIOD_TO_ORDER_COLUMN = {
+    1: 'to_order_week',
+    2: 'to_order_2w',
+    3: 'to_order_3w',
+    4: 'to_order_month',
+}
+
+
 def _parse_packaging_units(packaging):
     if packaging is None:
         return 1
@@ -37,21 +45,25 @@ def _is_without_supplier_name(name):
     return str(name or '').strip().lower() == 'без поставщика'
 
 
-def build_recommended_orders(order_df, period_weeks=4):
+def build_recommended_orders(order_df, period_weeks=4, include_zero_price_warnings=False):
     """
     Build grouped supplier orders for a given period (1-4 weeks).
 
     period_weeks: 1, 2, 3 or 4 – selects the matching to_order_Xw column.
-    Returns:
-      orders: list[dict]
-      missing_supplier_skus: list[str]
-      below_min_order_warnings: list[dict]
+        Returns by default:
+            orders: list[dict]
+            missing_supplier_skus: list[str]
+            below_min_order_warnings: list[dict]
+
+        If include_zero_price_warnings=True, returns an additional 4th element:
+            zero_price_warnings: list[dict]
     """
     if order_df is None or order_df.empty:
-        return [], [], []
+                if include_zero_price_warnings:
+                        return [], [], [], []
+                return [], [], []
 
-    _col_map = {1: 'to_order_week', 2: 'to_order_2w', 3: 'to_order_3w', 4: 'to_order_month'}
-    to_order_col = _col_map.get(int(period_weeks), 'to_order_month')
+    to_order_col = ORDER_PERIOD_TO_ORDER_COLUMN.get(int(period_weeks), 'to_order_month')
     if to_order_col not in order_df.columns:
         to_order_col = 'to_order_month'
 
@@ -59,6 +71,8 @@ def build_recommended_orders(order_df, period_weeks=4):
     required['_qty'] = pd.to_numeric(required['_qty'], errors='coerce').fillna(0)
     required = required[required['_qty'] > 0].copy()
     if required.empty:
+        if include_zero_price_warnings:
+            return [], [], [], []
         return [], [], []
 
     skus = sorted(set(required['sku']))
@@ -156,6 +170,7 @@ def build_recommended_orders(order_df, period_weeks=4):
         )
 
         below_min_order_warnings = []
+        zero_price_warnings = []
         for order in orders:
             if order['min_order'] > 0 and order['subtotal_without_delivery'] < order['min_order']:
                 below_min_order_warnings.append({
@@ -163,7 +178,15 @@ def build_recommended_orders(order_df, period_weeks=4):
                     'subtotal_without_delivery': order['subtotal_without_delivery'],
                     'min_order': order['min_order'],
                 })
+            zero_price_items = [i['Товар'] for i in order.get('items', []) if float(i.get('Цена за единицу', 0) or 0) == 0]
+            if zero_price_items:
+                zero_price_warnings.append({
+                    'supplier_name': order['supplier_name'],
+                    'items': sorted(set(zero_price_items)),
+                })
 
+        if include_zero_price_warnings:
+            return orders, missing_supplier_skus, below_min_order_warnings, zero_price_warnings
         return orders, missing_supplier_skus, below_min_order_warnings
     finally:
         session.close()

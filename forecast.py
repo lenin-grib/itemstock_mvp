@@ -1,11 +1,28 @@
 import pandas as pd
 import numpy as np
 from db_utils import get_net_sales_data, get_all_skus
-from cache_service import get_cached_forecasts, save_forecast_cache, invalidate_forecast_cache
+from cache_service import get_cached_forecasts, save_forecast_cache
 from forecast_schema import INTERNAL_FORECAST_COLUMNS
 
 
 FORECAST_COLUMNS = INTERNAL_FORECAST_COLUMNS
+
+
+def _empty_forecast_row(sku):
+    return {
+        "sku": sku,
+        "sales_interval_m4w": 0,
+        "sales_interval_m3w": 0,
+        "sales_interval_m2w": 0,
+        "sales_interval_m1w": 0,
+        "whole_period_sales": 0,
+        "trend_coef": 1,
+        "forecast_interval_p1w": 0,
+        "forecast_interval_p2w": 0,
+        "forecast_interval_p3w": 0,
+        "forecast_interval_p4w": 0,
+        "whole_period_forecast": 0,
+    }
 
 
 def get_last_n_days_sales(raw_df, sku, n_days, reference_date=None):
@@ -36,9 +53,11 @@ def get_sales_interval(raw_df, sku, start_day, end_day, reference_date=None):
     start_date = latest_date + pd.Timedelta(days=start_day)
     end_date = latest_date + pd.Timedelta(days=end_day)
     
-    # Ensure proper ordering
+    # Intervals must be passed in chronological order.
     if start_date > end_date:
-        start_date, end_date = end_date, start_date
+        raise ValueError(
+            f"Invalid interval bounds: start_day={start_day}, end_day={end_day}"
+        )
     
     return sku_df.loc[(sku_df['date'] >= start_date) & (sku_df['date'] <= end_date), 'outbound'].sum()
 
@@ -89,63 +108,6 @@ def _linear_weekly_forecast(recent_series):
     return trend, forecast_interval_1w, forecast_interval_2w, forecast_interval_3w, forecast_interval_4w
 
 
-def calculate_sales_metrics():
-    """
-    Загружает данные из БД и рассчитывает метрики
-
-    Возвращает:
-    DataFrame с метриками по каждому SKU
-    """
-
-    df = get_net_sales_data()
-    all_skus = get_all_skus()
-
-    if df.empty:
-        # Return empty metrics for all SKUs
-        return pd.DataFrame({
-            'sku': all_skus,
-            'total_sales': 0,
-            'avg_weekly_sales': 0,
-            'avg_monthly_sales': 0
-        }), pd.DataFrame()
-
-    # Ensure date is datetime
-    df['date'] = pd.to_datetime(df['date'])
-
-    # агрегируем по неделям
-    df["week"] = df["date"].dt.to_period("W").apply(lambda r: r.start_time)
-
-    weekly = df.groupby(["sku", "week"], as_index=False)["outbound"].sum()
-
-    # total sales
-    total_sales = weekly.groupby("sku")["outbound"].sum().reset_index(name="total_sales")
-
-    # средние
-    weekly_stats = weekly.groupby("sku")["outbound"].agg(
-        avg_weekly_sales="mean"
-    ).reset_index()
-
-    monthly_stats = weekly.groupby("sku")["outbound"].agg(
-        avg_monthly_sales=lambda x: x.mean() * 4
-    ).reset_index()
-
-    result = total_sales.merge(weekly_stats, on="sku").merge(monthly_stats, on="sku")
-
-    # Add SKUs with no sales
-    existing_skus = set(result['sku'])
-    missing_skus = [sku for sku in all_skus if sku not in existing_skus]
-    if missing_skus:
-        missing_df = pd.DataFrame({
-            'sku': missing_skus,
-            'total_sales': 0,
-            'avg_weekly_sales': 0,
-            'avg_monthly_sales': 0
-        })
-        result = pd.concat([result, missing_df], ignore_index=True)
-
-    return result, weekly
-
-
 def calculate_trend_and_forecast(trend_period_weeks=8):
     """
     trend_period_weeks: сколько недель истории использовать для прогноза
@@ -163,22 +125,7 @@ def calculate_trend_and_forecast(trend_period_weeks=8):
             result = pd.DataFrame(columns=_empty_cols)
             save_forecast_cache(result)
             return result
-        forecasts = []
-        for sku in all_skus:
-            forecasts.append({
-                "sku": sku,
-                "sales_interval_m4w": 0,
-                "sales_interval_m3w": 0,
-                "sales_interval_m2w": 0,
-                "sales_interval_m1w": 0,
-                "whole_period_sales": 0,
-                "trend_coef": 1,
-                "forecast_interval_p1w": 0,
-                "forecast_interval_p2w": 0,
-                "forecast_interval_p3w": 0,
-                "forecast_interval_p4w": 0,
-                "whole_period_forecast": 0,
-            })
+        forecasts = [_empty_forecast_row(sku) for sku in all_skus]
         result = pd.DataFrame(forecasts)
         save_forecast_cache(result)
         return result
@@ -202,18 +149,8 @@ def calculate_trend_and_forecast(trend_period_weeks=8):
         recent = group.tail(trend_weeks)
 
         if recent.empty:
-            # No sales data - return zeros with all interval columns
-            sales_interval_m4w = 0
-            sales_interval_m3w = 0
-            sales_interval_m2w = 0
-            sales_interval_m1w = 0
-            whole_period_sales = 0
-            trend = 1
-            forecast_interval_p1w = 0
-            forecast_interval_p2w = 0
-            forecast_interval_p3w = 0
-            forecast_interval_p4w = 0
-            whole_period_forecast = 0
+            forecasts.append(_empty_forecast_row(sku))
+            continue
         else:
             trend, forecast_interval_p1w, forecast_interval_p2w, forecast_interval_p3w, forecast_interval_p4w = _linear_weekly_forecast(recent['outbound'])
 
@@ -222,6 +159,7 @@ def calculate_trend_and_forecast(trend_period_weeks=8):
             sales_interval_m3w = get_sales_interval(raw_df, sku, -20, -14, reference_date=global_latest_date)
             sales_interval_m2w = get_sales_interval(raw_df, sku, -13, -7, reference_date=global_latest_date)
             sales_interval_m1w = get_sales_interval(raw_df, sku, -6, 0, reference_date=global_latest_date)
+            # whole_period_sales uses trend_weeks * 7 days ending at the global reference date.
             whole_period_sales = get_last_n_days_sales(
                 raw_df,
                 sku,

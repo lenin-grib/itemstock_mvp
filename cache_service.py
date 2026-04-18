@@ -112,7 +112,6 @@ def get_cached_ideal_stock():
                 'to_order_month': s.to_order_month,
                 'last_updated': s.last_updated,
             })
-        import pandas as pd
         return pd.DataFrame(data) if data else pd.DataFrame(columns=[
             'sku', 'current_stock',
             'ideal_stock', 'ideal_stock_2w', 'ideal_stock_3w', 'monthly_ideal_stock',
