@@ -101,44 +101,37 @@ def parse_single_file(file):
 
     df = df[base_cols + date_cols]
 
-    records = []
+    long_df = df.melt(
+        id_vars=["Наименование", "Остаток на начало периода"],
+        value_vars=date_cols,
+        var_name="raw_col",
+        value_name="value",
+    )
 
-    for _, row in df.iterrows():
-        sku = row["Наименование"]
-        opening_balance = row["Остаток на начало периода"]
-
-        for col in date_cols:
-            date_str, is_outbound = parse_column_name(col)
-
-            try:
-                date = datetime.strptime(date_str, "%d.%m.%Y")
-            except:
-                continue
-
-            value = row[col]
-            if pd.isna(value):
-                value = 0
-
-            records.append({
-                "sku": sku,
-                "date": date,
-                "inbound": 0 if is_outbound else value,
-                "outbound": value if is_outbound else 0,
-                "weekday": date.strftime("%A"),
-                "weekday_num": date.weekday(),
-                "opening_balance": opening_balance,
-                "source_file": getattr(file, "name", "unknown")
-            })
-
-    result = pd.DataFrame(records)
-
-    result = result.groupby(
-        ["sku", "date", "weekday", "weekday_num", "opening_balance", "source_file"],
-        as_index=False
-    ).agg({
-        "inbound": "sum",
-        "outbound": "sum"
+    long_df = long_df.rename(columns={
+        "Наименование": "sku",
+        "Остаток на начало периода": "opening_balance",
     })
+
+    long_df["value"] = pd.to_numeric(long_df["value"], errors="coerce").fillna(0)
+    long_df["is_outbound"] = long_df["raw_col"].astype(str).str.endswith(".1")
+    long_df["date_str"] = long_df["raw_col"].astype(str).str.replace(r"\.1$", "", regex=True)
+    long_df["date"] = pd.to_datetime(long_df["date_str"], format="%d.%m.%Y", errors="coerce")
+    long_df = long_df.dropna(subset=["date"])
+
+    long_df["inbound"] = long_df["value"].where(~long_df["is_outbound"], 0)
+    long_df["outbound"] = long_df["value"].where(long_df["is_outbound"], 0)
+    long_df["weekday"] = long_df["date"].dt.day_name()
+    long_df["weekday_num"] = long_df["date"].dt.weekday
+    long_df["source_file"] = getattr(file, "name", "unknown")
+
+    result = long_df.groupby(
+        ["sku", "date", "weekday", "weekday_num", "opening_balance", "source_file"],
+        as_index=False,
+    ).agg(
+        inbound=("inbound", "sum"),
+        outbound=("outbound", "sum"),
+    )
 
     result = compute_inventory_balance(result)
 

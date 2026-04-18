@@ -133,39 +133,68 @@ def calculate_trend_and_forecast(trend_period_weeks=8):
     raw_df['date'] = pd.to_datetime(raw_df['date'])
     raw_df = raw_df.sort_values(['sku', 'date'])
     global_latest_date = raw_df['date'].max()
-    weekly_df = raw_df.copy()
-    weekly_df['week'] = weekly_df['date'].dt.to_period('W').apply(lambda r: r.start_time)
-    weekly_df = weekly_df.groupby(['sku', 'week'], as_index=False)['outbound'].sum()
 
-    weekly_df = weekly_df.sort_values(['sku', 'week'])
+    weekly_df = raw_df[['sku', 'date', 'outbound']].copy()
+    weekly_df['week'] = weekly_df['date'].dt.to_period('W').apply(lambda r: r.start_time)
+    weekly_df = (
+        weekly_df.groupby(['sku', 'week'], as_index=False)['outbound']
+        .sum()
+        .sort_values(['sku', 'week'])
+    )
+
+    daily_df = (
+        raw_df.groupby(['sku', 'date'], as_index=False)['outbound']
+        .sum()
+        .sort_values(['sku', 'date'])
+    )
+
+    weekly_series_by_sku = {
+        sku: group['outbound'].reset_index(drop=True)
+        for sku, group in weekly_df.groupby('sku')
+    }
+    daily_series_by_sku = {
+        sku: group.set_index('date')['outbound']
+        for sku, group in daily_df.groupby('sku')
+    }
 
     forecasts = []
     trend_weeks = max(2, int(trend_period_weeks))
     whole_period_days = max(1, int(7 * trend_weeks))
     all_skus = get_all_skus()
+
+    def _sum_interval(series, start_day, end_day):
+        start_date = global_latest_date + pd.Timedelta(days=start_day)
+        end_date = global_latest_date + pd.Timedelta(days=end_day)
+        if start_date > end_date:
+            raise ValueError(
+                f"Invalid interval bounds: start_day={start_day}, end_day={end_day}"
+            )
+        return float(series.loc[(series.index >= start_date) & (series.index <= end_date)].sum())
+
     
     for sku in all_skus:
-        group = weekly_df[weekly_df['sku'] == sku].sort_values('week')
-        recent = group.tail(trend_weeks)
+        weekly_series = weekly_series_by_sku.get(sku)
+        daily_series = daily_series_by_sku.get(sku)
+
+        if weekly_series is None or weekly_series.empty or daily_series is None or daily_series.empty:
+            forecasts.append(_empty_forecast_row(sku))
+            continue
+
+        recent = weekly_series.tail(trend_weeks)
 
         if recent.empty:
             forecasts.append(_empty_forecast_row(sku))
             continue
         else:
-            trend, forecast_interval_p1w, forecast_interval_p2w, forecast_interval_p3w, forecast_interval_p4w = _linear_weekly_forecast(recent['outbound'])
+            trend, forecast_interval_p1w, forecast_interval_p2w, forecast_interval_p3w, forecast_interval_p4w = _linear_weekly_forecast(recent)
 
             # All calculations use the same reference date from latest log file.
-            sales_interval_m4w = get_sales_interval(raw_df, sku, -27, -21, reference_date=global_latest_date)
-            sales_interval_m3w = get_sales_interval(raw_df, sku, -20, -14, reference_date=global_latest_date)
-            sales_interval_m2w = get_sales_interval(raw_df, sku, -13, -7, reference_date=global_latest_date)
-            sales_interval_m1w = get_sales_interval(raw_df, sku, -6, 0, reference_date=global_latest_date)
+            sales_interval_m4w = _sum_interval(daily_series, -27, -21)
+            sales_interval_m3w = _sum_interval(daily_series, -20, -14)
+            sales_interval_m2w = _sum_interval(daily_series, -13, -7)
+            sales_interval_m1w = _sum_interval(daily_series, -6, 0)
             # whole_period_sales uses trend_weeks * 7 days ending at the global reference date.
-            whole_period_sales = get_last_n_days_sales(
-                raw_df,
-                sku,
-                whole_period_days,
-                reference_date=global_latest_date,
-            )
+            whole_period_sales = _sum_interval(daily_series, -(whole_period_days - 1), 0)
 
             # Calculate total forecast
             whole_period_forecast = forecast_interval_p1w + forecast_interval_p2w + forecast_interval_p3w + forecast_interval_p4w

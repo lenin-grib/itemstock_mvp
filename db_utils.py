@@ -89,65 +89,123 @@ def save_parsed_data(df, filename):
             session.add(uploaded_file)
         session.flush()
 
-        for _, row in work_df.iterrows():
+        skus = sorted(set(work_df['sku']))
+        products = session.query(Product).filter(Product.sku.in_(skus)).all()
+        products_by_sku = {p.sku: p for p in products}
+
+        for sku in skus:
+            if sku in products_by_sku:
+                continue
+            product = Product(sku=sku, first_seen=datetime.now())
+            session.add(product)
+            products_by_sku[sku] = product
+        session.flush()
+
+        product_ids = [int(products_by_sku[sku].id) for sku in skus]
+        min_date = file_first_date
+        max_date = file_last_date
+
+        existing_sales = {}
+        existing_supplies = {}
+        existing_balances = {}
+        if product_ids and min_date is not None and max_date is not None:
+            sales_rows = session.query(Sale).filter(
+                Sale.product_id.in_(product_ids),
+                Sale.date >= min_date,
+                Sale.date <= max_date,
+            ).all()
+            existing_sales = {(int(r.product_id), r.date): r for r in sales_rows}
+
+            supply_rows = session.query(Supply).filter(
+                Supply.product_id.in_(product_ids),
+                Supply.date >= min_date,
+                Supply.date <= max_date,
+            ).all()
+            existing_supplies = {(int(r.product_id), r.date): r for r in supply_rows}
+
+            balance_rows = session.query(Balance).filter(
+                Balance.product_id.in_(product_ids),
+                Balance.date >= min_date,
+                Balance.date <= max_date,
+            ).all()
+            existing_balances = {(int(r.product_id), r.date): r for r in balance_rows}
+
+        overwrite_cache = {}
+
+        def _can_overwrite(model, existing_source_file_id):
+            cache_key = (model.__tablename__, existing_source_file_id)
+            if cache_key not in overwrite_cache:
+                overwrite_cache[cache_key] = _is_newer_source(
+                    session,
+                    model,
+                    existing_source_file_id,
+                    uploaded_file,
+                    file_last_date,
+                )
+            return overwrite_cache[cache_key]
+
+        for row in work_df.to_dict('records'):
             sku = row['sku']
             date = row['date']
+            product = products_by_sku[sku]
+            product_id = int(product.id)
+            key = (product_id, date)
 
-            product = session.query(Product).filter_by(sku=sku).first()
-            if not product:
-                product = Product(sku=sku, first_seen=datetime.now())
-                session.add(product)
-                session.flush()
-
-            existing_sale = session.query(Sale).filter_by(product_id=product.id, date=date).first()
-            can_overwrite_sale = _is_newer_source(
-                session, Sale,
-                existing_sale.source_file_id if existing_sale else None,
-                uploaded_file, file_last_date,
-            )
-            if can_overwrite_sale:
+            existing_sale = existing_sales.get(key)
+            if _can_overwrite(Sale, existing_sale.source_file_id if existing_sale else None):
                 outbound_qty = float(row.get('outbound', 0) or 0)
                 if outbound_qty > 0:
                     if existing_sale:
                         existing_sale.quantity = outbound_qty
                         existing_sale.source_file_id = uploaded_file.id
                     else:
-                        session.add(Sale(product_id=product.id, date=date, quantity=outbound_qty, source_file_id=uploaded_file.id))
-                else:
-                    if existing_sale:
-                        session.delete(existing_sale)
+                        new_sale = Sale(
+                            product_id=product_id,
+                            date=date,
+                            quantity=outbound_qty,
+                            source_file_id=uploaded_file.id,
+                        )
+                        session.add(new_sale)
+                        existing_sales[key] = new_sale
+                elif existing_sale:
+                    session.delete(existing_sale)
+                    existing_sales.pop(key, None)
 
-            existing_supply = session.query(Supply).filter_by(product_id=product.id, date=date).first()
-            can_overwrite_supply = _is_newer_source(
-                session, Supply,
-                existing_supply.source_file_id if existing_supply else None,
-                uploaded_file, file_last_date,
-            )
-            if can_overwrite_supply:
+            existing_supply = existing_supplies.get(key)
+            if _can_overwrite(Supply, existing_supply.source_file_id if existing_supply else None):
                 inbound_qty = float(row.get('inbound', 0) or 0)
                 if inbound_qty > 0:
                     if existing_supply:
                         existing_supply.quantity = inbound_qty
                         existing_supply.source_file_id = uploaded_file.id
                     else:
-                        session.add(Supply(product_id=product.id, date=date, quantity=inbound_qty, source_file_id=uploaded_file.id))
-                else:
-                    if existing_supply:
-                        session.delete(existing_supply)
+                        new_supply = Supply(
+                            product_id=product_id,
+                            date=date,
+                            quantity=inbound_qty,
+                            source_file_id=uploaded_file.id,
+                        )
+                        session.add(new_supply)
+                        existing_supplies[key] = new_supply
+                elif existing_supply:
+                    session.delete(existing_supply)
+                    existing_supplies.pop(key, None)
 
-            existing_balance = session.query(Balance).filter_by(product_id=product.id, date=date).first()
-            can_overwrite_balance = _is_newer_source(
-                session, Balance,
-                existing_balance.source_file_id if existing_balance else None,
-                uploaded_file, file_last_date,
-            )
-            if can_overwrite_balance:
+            existing_balance = existing_balances.get(key)
+            if _can_overwrite(Balance, existing_balance.source_file_id if existing_balance else None):
                 new_balance = float(row.get('\u043e\u0441\u0442\u0430\u0442\u043e\u043a \u043d\u0430 \u0441\u043a\u043b\u0430\u0434\u0435', 0) or 0)
                 if existing_balance:
                     existing_balance.balance = new_balance
                     existing_balance.source_file_id = uploaded_file.id
                 else:
-                    session.add(Balance(product_id=product.id, date=date, balance=new_balance, source_file_id=uploaded_file.id))
+                    new_row = Balance(
+                        product_id=product_id,
+                        date=date,
+                        balance=new_balance,
+                        source_file_id=uploaded_file.id,
+                    )
+                    session.add(new_row)
+                    existing_balances[key] = new_row
 
         session.commit()
         rebuild_net_sales()
@@ -192,32 +250,69 @@ def save_spoils_data(df, filename):
             session.add(uploaded_file)
         session.flush()
 
-        for _, row in work_df.iterrows():
-            sku = row['sku']
-            date = row['date']
-            reason = row.get('reason') or '\u0411\u0435\u0437 \u043f\u0440\u0438\u0447\u0438\u043d\u044b'
-            qty = float(row.get('quantity', 0) or 0)
+        skus = sorted(set(work_df['sku']))
+        products = session.query(Product).filter(Product.sku.in_(skus)).all()
+        products_by_sku = {p.sku: p for p in products}
 
-            product = session.query(Product).filter_by(sku=sku).first()
-            if not product:
-                product = Product(sku=sku, first_seen=datetime.now())
-                session.add(product)
-                session.flush()
+        for sku in skus:
+            if sku in products_by_sku:
+                continue
+            product = Product(sku=sku, first_seen=datetime.now())
+            session.add(product)
+            products_by_sku[sku] = product
+        session.flush()
 
-            existing_spoil = session.query(Spoil).filter_by(product_id=product.id, date=date, reason=reason).first()
-            can_overwrite_spoil = _is_newer_source(
-                session, Spoil,
-                existing_spoil.source_file_id if existing_spoil else None,
-                uploaded_file, file_last_date,
-            )
-            if not can_overwrite_spoil:
+        product_ids = [int(products_by_sku[sku].id) for sku in skus]
+        existing_spoils = {}
+        if product_ids and file_first_date is not None and file_last_date is not None:
+            spoil_rows = session.query(Spoil).filter(
+                Spoil.product_id.in_(product_ids),
+                Spoil.date >= file_first_date,
+                Spoil.date <= file_last_date,
+            ).all()
+            existing_spoils = {
+                (int(r.product_id), r.date, r.reason): r for r in spoil_rows
+            }
+
+        overwrite_cache = {}
+
+        def _can_overwrite(existing_source_file_id):
+            cache_key = ('spoils', existing_source_file_id)
+            if cache_key not in overwrite_cache:
+                overwrite_cache[cache_key] = _is_newer_source(
+                    session,
+                    Spoil,
+                    existing_source_file_id,
+                    uploaded_file,
+                    file_last_date,
+                )
+            return overwrite_cache[cache_key]
+
+        for row in work_df.itertuples(index=False):
+            sku = row.sku
+            date = row.date
+            reason = getattr(row, 'reason', None) or '\u0411\u0435\u0437 \u043f\u0440\u0438\u0447\u0438\u043d\u044b'
+            qty = float(getattr(row, 'quantity', 0) or 0)
+            product_id = int(products_by_sku[sku].id)
+            key = (product_id, date, reason)
+
+            existing_spoil = existing_spoils.get(key)
+            if not _can_overwrite(existing_spoil.source_file_id if existing_spoil else None):
                 continue
 
             if existing_spoil:
                 existing_spoil.quantity = qty
                 existing_spoil.source_file_id = uploaded_file.id
             else:
-                session.add(Spoil(product_id=product.id, date=date, quantity=qty, reason=reason, source_file_id=uploaded_file.id))
+                new_spoil = Spoil(
+                    product_id=product_id,
+                    date=date,
+                    quantity=qty,
+                    reason=reason,
+                    source_file_id=uploaded_file.id,
+                )
+                session.add(new_spoil)
+                existing_spoils[key] = new_spoil
 
         session.commit()
         rebuild_net_sales()
