@@ -3,12 +3,15 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-from db_utils import get_parameters, get_uploaded_files, update_parameters, reset_database_data, get_all_skus, get_net_sales_data
+from db_utils import get_parameters, get_uploaded_files, update_parameters, reset_database_data, get_net_sales_data
 from parser import parse_and_save_file, parse_and_save_spoils_file, parse_and_save_price_list_file
 from forecast import get_forecasts
 from forecast_schema import INTERNAL_FORECAST_COLUMNS, build_forecast_display_df
 from ideal_stock import get_ideal_stock
-from order_service import build_recommended_orders, ORDER_PERIOD_TO_ORDER_COLUMN
+from order_service import ORDER_PERIOD_TO_ORDER_COLUMN
+from orders_view_service import build_orders_view_model
+from sales_view_service import build_sales_view_model, get_default_popular_threshold
+from suppliers_view_service import build_suppliers_display_df, detect_supplier_changes, normalize_suppliers_for_save
 from supplier_service import get_suppliers, update_supplier_info
 from cache_service import invalidate_forecast_cache, invalidate_ideal_stock_cache
 from database import init_db
@@ -348,44 +351,20 @@ with tab_sales:
 
             st.dataframe(display_forecast_df)
 
-            # Popular and no-demand items: use same period metric as forecast table
-            period_weeks = trend_weeks
-            all_skus = get_all_skus()
-
-            sales_view = forecast_df[['sku', 'whole_period_sales', 'whole_period_forecast']].copy()
-            sales_view['net_sales_period'] = pd.to_numeric(sales_view['whole_period_sales'], errors='coerce').fillna(0)
-            sales_view = sales_view.merge(
-                stock_df[['sku', 'current_stock']],
-                on='sku',
-                how='left'
-            )
-            sales_view['current_stock'] = sales_view['current_stock'].fillna(0)
-
             popular_threshold = st.number_input(
                 "Порог популярности (продаж за период)",
                 min_value=0,
-                value=max(1, int(35 * (period_weeks / 4))),
+                value=get_default_popular_threshold(trend_weeks),
                 step=1
             )
 
-            popular = sales_view.loc[
-                sales_view["net_sales_period"] > popular_threshold,
-                ["sku", "net_sales_period", "current_stock", "whole_period_forecast"]
-            ].sort_values("net_sales_period", ascending=False)
-
-            popular = popular.rename(columns={
-                'sku': 'Товар',
-                'net_sales_period': 'Продажи за период',
-                'current_stock': 'Осталось на складе',
-                'whole_period_forecast': 'Прогноз на период'
-            })
-
-            no_demand = sales_view.loc[sales_view["net_sales_period"] == 0, ["sku"]]
-
-            existing = set(no_demand['sku'])
-            for sku in all_skus:
-                if sku not in set(sales_view['sku']) and sku not in existing:
-                    no_demand = pd.concat([no_demand, pd.DataFrame([{'sku': sku}])], ignore_index=True)
+            sales_view_model = build_sales_view_model(
+                forecast_df=forecast_df,
+                stock_df=stock_df,
+                popular_threshold=popular_threshold,
+            )
+            popular = sales_view_model.popular_df
+            no_demand = sales_view_model.no_demand_df
 
             col_popular, col_no_demand = st.columns([3, 2])
             with col_popular:
@@ -481,33 +460,20 @@ with tab_orders:
                 st.dataframe(styled_df)
 
                 st.subheader("🧾 Рекомендуемые заказы")
-                recommended_result = build_recommended_orders(
+                orders_view = build_orders_view_model(
                     order_df,
                     period_weeks=order_period_weeks,
-                    return_result_object=True,
                 )
-                recommended_orders = recommended_result.orders
-                missing_supplier_skus = recommended_result.missing_supplier_skus
-                below_min_warnings = recommended_result.below_min_order_warnings
-                zero_price_warnings = recommended_result.zero_price_warnings
+                recommended_orders = orders_view.recommended_orders
+                missing_supplier_skus = orders_view.missing_supplier_skus
+                below_min_map = orders_view.below_min_map
+                zero_price_map = orders_view.zero_price_map
 
                 if missing_supplier_skus:
                     st.warning("Не найден поставщик для следующих товаров:")
                     st.dataframe(pd.DataFrame({'Товар': missing_supplier_skus}), height=140, use_container_width=True)
 
-                below_min_map = {
-                    w['supplier_name']: w for w in below_min_warnings
-                }
-                zero_price_map = {
-                    w['supplier_name']: w for w in zero_price_warnings
-                }
-
                 if recommended_orders:
-                    recommended_orders = sorted(
-                        recommended_orders,
-                        key=lambda x: (1 if x.get('is_without_supplier') else 0, -x['total_cost'])
-                    )
-
                     for order in recommended_orders:
                         has_min_warning = order['supplier_name'] in below_min_map
                         has_zero_price_warning = order['supplier_name'] in zero_price_map
@@ -559,17 +525,7 @@ with tab_suppliers:
 
     suppliers_df = get_suppliers()
     if not suppliers_df.empty:
-        display_df = suppliers_df[[
-            'name',
-            'delivery_cost',
-            'delivery_time',
-            'min_order'
-        ]].rename(columns={
-            'name': 'Название',
-            'delivery_cost': 'Стоимость доставки',
-            'delivery_time': 'Срок доставки',
-            'min_order': 'Минимальный заказ'
-        })
+        display_df = build_suppliers_display_df(suppliers_df)
 
         edited = st.data_editor(
             display_df,
@@ -580,32 +536,14 @@ with tab_suppliers:
             }
         )
 
-        # Check for changes and highlight in editor
-        original_values = display_df.set_index('Название')
-        edited_values = edited.set_index('Название')
-        changes = {}
-        for name in original_values.index:
-            if name in edited_values.index:
-                orig_row = original_values.loc[name]
-                edit_row = edited_values.loc[name]
-                changed_cols = []
-                for col in ['Стоимость доставки', 'Срок доставки', 'Минимальный заказ']:
-                    if orig_row[col] != edit_row[col]:
-                        changed_cols.append(col)
-                if changed_cols:
-                    changes[name] = changed_cols
+        changes = detect_supplier_changes(display_df, edited)
 
         if changes:
             col1, col2 = st.columns(2)
             with col1:
                 if st.button('Сохранить изменения'):
-                    edited = edited.rename(columns={
-                        'Название': 'name',
-                        'Стоимость доставки': 'delivery_cost',
-                        'Срок доставки': 'delivery_time',
-                        'Минимальный заказ': 'min_order'
-                    })
-                    for _, row in edited.iterrows():
+                    normalized = normalize_suppliers_for_save(edited)
+                    for _, row in normalized.iterrows():
                         update_supplier_info(
                             row['name'],
                             row['delivery_cost'],

@@ -12,8 +12,11 @@ import db_utils
 import forecast
 import ideal_stock
 import order_service
+import orders_view_service
 import parser
+import sales_view_service
 import supplier_service
+import suppliers_view_service
 
 
 _SUPPLIER_QUERY_UNSET = object()
@@ -455,6 +458,128 @@ class OrderAndSupplierSmokeTests(unittest.TestCase):
 
         self.assertFalse(fake_session.committed)
         self.assertTrue(fake_session.closed)
+
+
+class OrdersViewServiceSmokeTests(unittest.TestCase):
+    def test_build_orders_view_model_builds_maps_and_sorting(self):
+        service_result = order_service.RecommendedOrdersResult(
+            orders=[
+                {
+                    "supplier_name": "Без поставщика",
+                    "is_without_supplier": True,
+                    "total_cost": 500.0,
+                },
+                {
+                    "supplier_name": "S1",
+                    "is_without_supplier": False,
+                    "total_cost": 100.0,
+                },
+                {
+                    "supplier_name": "S2",
+                    "is_without_supplier": False,
+                    "total_cost": 300.0,
+                },
+            ],
+            missing_supplier_skus=["M1"],
+            below_min_order_warnings=[
+                {"supplier_name": "S1", "min_order": 1000, "subtotal_without_delivery": 100}
+            ],
+            zero_price_warnings=[
+                {"supplier_name": "S2", "items": ["SKU-1"]}
+            ],
+        )
+
+        with patch("orders_view_service.build_recommended_orders", return_value=service_result):
+            view_model = orders_view_service.build_orders_view_model(pd.DataFrame({"sku": ["A"]}), period_weeks=4)
+
+        self.assertEqual(view_model.missing_supplier_skus, ["M1"])
+        self.assertIn("S1", view_model.below_min_map)
+        self.assertIn("S2", view_model.zero_price_map)
+
+        sorted_names = [order["supplier_name"] for order in view_model.recommended_orders]
+        self.assertEqual(sorted_names, ["S2", "S1", "Без поставщика"])
+
+
+class SalesViewServiceSmokeTests(unittest.TestCase):
+    def test_build_sales_view_model_builds_popular_and_no_demand(self):
+        forecast_df = pd.DataFrame(
+            {
+                "sku": ["A", "B"],
+                "whole_period_sales": [50, 0],
+                "whole_period_forecast": [40, 10],
+            }
+        )
+        stock_df = pd.DataFrame(
+            {
+                "sku": ["A", "B"],
+                "current_stock": [5, 0],
+            }
+        )
+
+        with patch("sales_view_service.get_all_skus", return_value=["A", "B", "C"]):
+            view_model = sales_view_service.build_sales_view_model(
+                forecast_df=forecast_df,
+                stock_df=stock_df,
+                popular_threshold=20,
+            )
+
+        popular_items = list(view_model.popular_df["Товар"])
+        self.assertEqual(popular_items, ["A"])
+
+        no_demand_items = sorted(view_model.no_demand_df["sku"].tolist())
+        self.assertEqual(no_demand_items, ["B", "C"])
+
+    def test_get_default_popular_threshold_scales_with_period(self):
+        self.assertEqual(sales_view_service.get_default_popular_threshold(4), 35)
+        self.assertEqual(sales_view_service.get_default_popular_threshold(8), 70)
+
+
+class SuppliersViewServiceSmokeTests(unittest.TestCase):
+    def test_build_suppliers_display_df_renames_expected_columns(self):
+        suppliers_df = pd.DataFrame(
+            {
+                "name": ["S1"],
+                "delivery_cost": [100],
+                "delivery_time": ["2"],
+                "min_order": [500],
+                "item_count": [10],
+            }
+        )
+
+        display_df = suppliers_view_service.build_suppliers_display_df(suppliers_df)
+
+        self.assertEqual(
+            list(display_df.columns),
+            ["Название", "Стоимость доставки", "Срок доставки", "Минимальный заказ"],
+        )
+
+    def test_detect_supplier_changes_and_normalize_for_save(self):
+        original_df = pd.DataFrame(
+            {
+                "Название": ["S1"],
+                "Стоимость доставки": [100],
+                "Срок доставки": ["2"],
+                "Минимальный заказ": [500],
+            }
+        )
+        edited_df = pd.DataFrame(
+            {
+                "Название": ["S1"],
+                "Стоимость доставки": [120],
+                "Срок доставки": ["3"],
+                "Минимальный заказ": [500],
+            }
+        )
+
+        changes = suppliers_view_service.detect_supplier_changes(original_df, edited_df)
+        self.assertIn("S1", changes)
+        self.assertEqual(changes["S1"], ["Стоимость доставки", "Срок доставки"])
+
+        normalized_df = suppliers_view_service.normalize_suppliers_for_save(edited_df)
+        self.assertIn("name", normalized_df.columns)
+        self.assertIn("delivery_cost", normalized_df.columns)
+        self.assertIn("delivery_time", normalized_df.columns)
+        self.assertIn("min_order", normalized_df.columns)
 
 
 class ParserSmokeTests(unittest.TestCase):
