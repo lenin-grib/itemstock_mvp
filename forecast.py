@@ -2,21 +2,10 @@ import pandas as pd
 import numpy as np
 from db_utils import get_net_sales_data, get_all_skus
 from cache_service import get_cached_forecasts, save_forecast_cache, invalidate_forecast_cache
+from forecast_schema import INTERNAL_FORECAST_COLUMNS
 
 
-FORECAST_COLUMNS = [
-    "sku",
-    "whole_period_sales",
-    "sales_last_month",
-    "sales_last_3w",
-    "sales_last_2w",
-    "sales_last_week",
-    "trend_coef",
-    "forecast_next_week",
-    "forecast_2w",
-    "forecast_3w",
-    "forecast_next_month",
-]
+FORECAST_COLUMNS = INTERNAL_FORECAST_COLUMNS
 
 
 def get_last_n_days_sales(raw_df, sku, n_days, reference_date=None):
@@ -29,10 +18,36 @@ def get_last_n_days_sales(raw_df, sku, n_days, reference_date=None):
     return sku_df.loc[sku_df['date'] >= cutoff_date, 'outbound'].sum()
 
 
+def get_sales_interval(raw_df, sku, start_day, end_day, reference_date=None):
+    """
+    Get sales for a specific day interval relative to reference_date.
+    start_day and end_day are negative (past) or positive (future) offsets from reference_date.
+    For example: start_day=-7, end_day=-1 gets sales from 7 days ago to yesterday.
+    """
+    sku_df = raw_df[raw_df['sku'] == sku].sort_values('date')
+    if sku_df.empty:
+        return 0
+
+    latest_date = reference_date if reference_date is not None else sku_df['date'].max()
+    
+    # Convert day offsets to dates
+    # For past intervals (negative offsets): -7 means 7 days before reference
+    # For future intervals (positive offsets): +1 means 1 day after reference
+    start_date = latest_date + pd.Timedelta(days=start_day)
+    end_date = latest_date + pd.Timedelta(days=end_day)
+    
+    # Ensure proper ordering
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    
+    return sku_df.loc[(sku_df['date'] >= start_date) & (sku_df['date'] <= end_date), 'outbound'].sum()
+
+
 def _linear_weekly_forecast(recent_series):
     """
     Линейный прогноз по последним N неделям.
-    Возвращает (trend_coef, forecast_1w, forecast_2w, forecast_3w, forecast_4w).
+    Возвращает (trend_coef, forecast_interval_1w, forecast_interval_2w, forecast_interval_3w, forecast_interval_4w).
+    Each forecast_interval represents the forecast for that individual week only.
     """
     values = recent_series.to_numpy(dtype=float)
     if len(values) == 0:
@@ -40,12 +55,14 @@ def _linear_weekly_forecast(recent_series):
 
     avg_weekly = float(np.mean(values))
     if len(values) < 2:
+        # For small samples, return equal distribution across weeks
+        weekly_avg = max(0.0, avg_weekly)
         return (
             1.0,
-            max(0.0, avg_weekly),
-            max(0.0, avg_weekly * 2),
-            max(0.0, avg_weekly * 3),
-            max(0.0, avg_weekly * 4),
+            weekly_avg,
+            weekly_avg,
+            weekly_avg,
+            weekly_avg,
         )
 
     x = np.arange(len(values), dtype=float)
@@ -58,16 +75,18 @@ def _linear_weekly_forecast(recent_series):
         trend = next_week_raw / avg_weekly
     trend = float(np.clip(trend, 0.5, 1.5))
 
+    # Calculate forecast for each individual week
     future_x = np.arange(len(values), len(values) + 4, dtype=float)
     future_vals = intercept + slope * future_x
     future_vals = np.clip(future_vals, a_min=0.0, a_max=None)
 
-    forecast_1w = float(future_vals[0])
-    forecast_2w = float(np.sum(future_vals[0:2]))
-    forecast_3w = float(np.sum(future_vals[0:3]))
-    forecast_4w = float(np.sum(future_vals[0:4]))
+    # Each forecast_interval is just the value for that week
+    forecast_interval_1w = float(future_vals[0])
+    forecast_interval_2w = float(future_vals[1])
+    forecast_interval_3w = float(future_vals[2])
+    forecast_interval_4w = float(future_vals[3])
 
-    return trend, forecast_1w, forecast_2w, forecast_3w, forecast_4w
+    return trend, forecast_interval_1w, forecast_interval_2w, forecast_interval_3w, forecast_interval_4w
 
 
 def calculate_sales_metrics():
@@ -131,10 +150,14 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
     """
     weekly_df: sku, week, outbound (если None, загружает из БД)
     trend_period_weeks: сколько недель истории использовать для прогноза
+    
+    All sales and forecast calculations use the same reference date: latest date from loaded log files.
     """
 
     raw_df = None
     global_latest_date = None
+    
+    # Always load raw_df to establish consistent reference date from actual log files
     if weekly_df is None:
         raw_df = get_net_sales_data()
 
@@ -150,16 +173,17 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
             for sku in all_skus:
                 forecasts.append({
                     "sku": sku,
-                    "sales_last_week": 0,
-                    "sales_last_2w": 0,
-                    "sales_last_3w": 0,
-                    "sales_last_month": 0,
+                    "sales_interval_m4w": 0,
+                    "sales_interval_m3w": 0,
+                    "sales_interval_m2w": 0,
+                    "sales_interval_m1w": 0,
                     "whole_period_sales": 0,
                     "trend_coef": 1,
-                    "forecast_next_week": 0,
-                    "forecast_2w": 0,
-                    "forecast_3w": 0,
-                    "forecast_next_month": 0,
+                    "forecast_interval_p1w": 0,
+                    "forecast_interval_p2w": 0,
+                    "forecast_interval_p3w": 0,
+                    "forecast_interval_p4w": 0,
+                    "whole_period_forecast": 0,
                 })
             result = pd.DataFrame(forecasts)
             save_forecast_cache(result)
@@ -171,55 +195,104 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
         weekly_df = raw_df.copy()
         weekly_df['week'] = weekly_df['date'].dt.to_period('W').apply(lambda r: r.start_time)
         weekly_df = weekly_df.groupby(['sku', 'week'], as_index=False)['outbound'].sum()
+    else:
+        # If weekly_df is provided, we still need to load raw_df to get consistent reference date
+        # and to calculate individual day intervals
+        raw_df = get_net_sales_data()
+        if not raw_df.empty:
+            raw_df['date'] = pd.to_datetime(raw_df['date'])
+            raw_df = raw_df.sort_values(['sku', 'date'])
+            global_latest_date = raw_df['date'].max()
+        else:
+            # If no raw data available, extract max date from weekly_df
+            if 'week' in weekly_df.columns:
+                global_latest_date = pd.to_datetime(weekly_df['week'].max())
 
     weekly_df = weekly_df.sort_values(['sku', 'week'])
 
     forecasts = []
     trend_weeks = max(2, int(trend_period_weeks))
+    whole_period_days = max(1, int(7 * trend_weeks))
     all_skus = get_all_skus()
+    
+    # Log reference date for consistency check
+    # All sales_interval_* and whole_period_sales calculations use this reference date
+    if global_latest_date is not None:
+        reference_date_str = global_latest_date.strftime('%Y-%m-%d')
+    else:
+        reference_date_str = "None (using SKU-specific max dates)"
 
     for sku in all_skus:
         group = weekly_df[weekly_df['sku'] == sku].sort_values('week')
         recent = group.tail(trend_weeks)
 
         if recent.empty:
-            last_week_sales = 0
-            last_2w_sales = 0
-            last_3w_sales = 0
-            last_month_sales = 0
+            # No sales data - return zeros with all interval columns
+            sales_interval_m4w = 0
+            sales_interval_m3w = 0
+            sales_interval_m2w = 0
+            sales_interval_m1w = 0
             whole_period_sales = 0
             trend = 1
-            forecast_1w = 0
-            forecast_2w = 0
-            forecast_3w = 0
-            forecast_4w = 0
+            forecast_interval_p1w = 0
+            forecast_interval_p2w = 0
+            forecast_interval_p3w = 0
+            forecast_interval_p4w = 0
+            whole_period_forecast = 0
         else:
-            whole_period_sales = recent['outbound'].sum()
-            trend, forecast_1w, forecast_2w, forecast_3w, forecast_4w = _linear_weekly_forecast(recent['outbound'])
+            trend, forecast_interval_p1w, forecast_interval_p2w, forecast_interval_p3w, forecast_interval_p4w = _linear_weekly_forecast(recent['outbound'])
 
-            if raw_df is not None:
-                last_week_sales = get_last_n_days_sales(raw_df, sku, 7, reference_date=global_latest_date)
-                last_2w_sales = get_last_n_days_sales(raw_df, sku, 14, reference_date=global_latest_date)
-                last_3w_sales = get_last_n_days_sales(raw_df, sku, 21, reference_date=global_latest_date)
-                last_month_sales = get_last_n_days_sales(raw_df, sku, 28, reference_date=global_latest_date)
+            if raw_df is not None and global_latest_date is not None:
+                # All calculations use the same reference date from latest log file
+                # Calculate individual week intervals for display (each 7 days, non-overlapping)
+                # m4w: days -27 to -21 (7 days)
+                # m3w: days -20 to -14 (7 days)
+                # m2w: days -13 to -7 (7 days)
+                # m1w: days -6 to 0 (7 days)
+                # Total: 28 days
+                sales_interval_m4w = get_sales_interval(raw_df, sku, -27, -21, reference_date=global_latest_date)
+                sales_interval_m3w = get_sales_interval(raw_df, sku, -20, -14, reference_date=global_latest_date)
+                sales_interval_m2w = get_sales_interval(raw_df, sku, -13, -7, reference_date=global_latest_date)
+                sales_interval_m1w = get_sales_interval(raw_df, sku, -6, 0, reference_date=global_latest_date)
+                # whole_period_sales = all sales from (reference_date - trend_weeks*4 days) to reference_date
+                # This covers the full lookback period, which may be more than 28 days
+                whole_period_sales = get_last_n_days_sales(
+                    raw_df,
+                    sku,
+                    whole_period_days,
+                    reference_date=global_latest_date,
+                )
             else:
-                last_week_sales = group.iloc[-1]['outbound'] if not group.empty else 0
-                last_2w_sales = group.tail(2)['outbound'].sum() if len(group) >= 2 else group['outbound'].sum()
-                last_3w_sales = group.tail(3)['outbound'].sum() if len(group) >= 3 else group['outbound'].sum()
-                last_month_sales = group.tail(4)['outbound'].sum() if len(group) >= 4 else group['outbound'].sum()
+                # Fallback to weekly data when raw daily data not available
+                # Use the last date in weekly_df as reference
+                if not group.empty:
+                    fallback_ref_date = group.iloc[-1]['week']
+                else:
+                    fallback_ref_date = global_latest_date
+                    
+                sales_interval_m1w = group.iloc[-1]['outbound'] if not group.empty else 0
+                sales_interval_m2w = group.iloc[-2]['outbound'] if len(group) >= 2 else 0
+                sales_interval_m3w = group.iloc[-3]['outbound'] if len(group) >= 3 else 0
+                sales_interval_m4w = group.iloc[-4]['outbound'] if len(group) >= 4 else 0
+                # whole_period_sales = sum of last trend_weeks weeks (consistent with trend lookback)
+                whole_period_sales = group.tail(trend_weeks)['outbound'].sum()
+
+            # Calculate total forecast
+            whole_period_forecast = forecast_interval_p1w + forecast_interval_p2w + forecast_interval_p3w + forecast_interval_p4w
 
         forecasts.append({
             "sku": sku,
-            "sales_last_week": last_week_sales,
-            "sales_last_2w": last_2w_sales,
-            "sales_last_3w": last_3w_sales,
-            "sales_last_month": last_month_sales,
+            "sales_interval_m4w": sales_interval_m4w,
+            "sales_interval_m3w": sales_interval_m3w,
+            "sales_interval_m2w": sales_interval_m2w,
+            "sales_interval_m1w": sales_interval_m1w,
             "whole_period_sales": whole_period_sales,
             "trend_coef": trend,
-            "forecast_next_week": forecast_1w,
-            "forecast_2w": forecast_2w,
-            "forecast_3w": forecast_3w,
-            "forecast_next_month": forecast_4w,
+            "forecast_interval_p1w": forecast_interval_p1w,
+            "forecast_interval_p2w": forecast_interval_p2w,
+            "forecast_interval_p3w": forecast_interval_p3w,
+            "forecast_interval_p4w": forecast_interval_p4w,
+            "whole_period_forecast": whole_period_forecast,
         })
 
     _result_cols = FORECAST_COLUMNS.copy()
@@ -229,10 +302,11 @@ def calculate_trend_and_forecast(weekly_df=None, trend_period_weeks=8):
         return result
     result = pd.DataFrame(forecasts)
     result = result.assign(
-        forecast_next_week=lambda df: np.ceil(df["forecast_next_week"]).astype(int),
-        forecast_2w=lambda df: np.ceil(df["forecast_2w"]).astype(int),
-        forecast_3w=lambda df: np.ceil(df["forecast_3w"]).astype(int),
-        forecast_next_month=lambda df: np.ceil(df["forecast_next_month"]).astype(int),
+        forecast_interval_p1w=lambda df: np.ceil(df["forecast_interval_p1w"]).astype(int),
+        forecast_interval_p2w=lambda df: np.ceil(df["forecast_interval_p2w"]).astype(int),
+        forecast_interval_p3w=lambda df: np.ceil(df["forecast_interval_p3w"]).astype(int),
+        forecast_interval_p4w=lambda df: np.ceil(df["forecast_interval_p4w"]).astype(int),
+        whole_period_forecast=lambda df: np.ceil(df["whole_period_forecast"]).astype(int),
     )[FORECAST_COLUMNS]
 
     # Ensure unique SKU

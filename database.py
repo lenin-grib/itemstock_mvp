@@ -170,15 +170,16 @@ class CachedForecast(Base):
     __tablename__ = 'cached_forecasts'
     sku = Column(String, primary_key=True)
     whole_period_sales = Column(Float)
-    sales_last_week = Column(Float)   # 1w
-    sales_last_2w = Column(Float)
-    sales_last_3w = Column(Float)
-    sales_last_month = Column(Float)  # 4w
+    sales_interval_m4w = Column(Float)   # days -27 to -21 (7 days)
+    sales_interval_m3w = Column(Float)   # days -20 to -14 (7 days)
+    sales_interval_m2w = Column(Float)   # days -13 to -7 (7 days)
+    sales_interval_m1w = Column(Float)   # days -6 to 0 (7 days)
     trend_coef = Column(Float)
-    forecast_next_week = Column(Integer)  # forecast_1w
-    forecast_2w = Column(Integer)
-    forecast_3w = Column(Integer)
-    forecast_next_month = Column(Integer)  # forecast_4w
+    forecast_interval_p1w = Column(Integer)  # interval +1 to +7 days
+    forecast_interval_p2w = Column(Integer)  # interval +8 to +14 days
+    forecast_interval_p3w = Column(Integer)  # interval +15 to +21 days
+    forecast_interval_p4w = Column(Integer)  # interval +22 to +28 days
+    whole_period_forecast = Column(Integer)
     last_updated = Column(DateTime, default=None)
 
     __table_args__ = (
@@ -243,18 +244,26 @@ def init_db():
         weeks_param = session.query(Parameter).filter_by(key='trend_period_weeks').first()
         if old_param and weeks_param and (weeks_param.value is None or weeks_param.value <= 0):
             weeks_param.value = max(1, int(old_param.value * 4))
-        # Migrate cached_forecasts: add 2w/3w columns if absent.
+        
+        # Migrate cached_forecasts from cumulative to individual intervals
         forecast_cols = {
             row[1] for row in session.execute(text("PRAGMA table_info(cached_forecasts)")).fetchall()
         }
-        forecast_migrated = False
-        for col in ('sales_last_2w', 'sales_last_3w', 'forecast_2w', 'forecast_3w'):
-            if col not in forecast_cols:
-                session.execute(text(f"ALTER TABLE cached_forecasts ADD COLUMN {col} FLOAT"))
-                forecast_migrated = True
-        if forecast_migrated:
-            session.execute(text("DELETE FROM cached_forecasts"))
-
+        
+        # Check if old schema is present
+        if 'sales_last_week' in forecast_cols and 'sales_interval_m1w' not in forecast_cols:
+            # Drop old table and clear cache
+            session.execute(text("DROP TABLE IF EXISTS cached_forecasts"))
+            session.commit()
+            # Recreate with new schema
+            Base.metadata.create_all(bind=engine)
+        elif 'sales_interval_m4w' not in forecast_cols and 'sales_last_month' in forecast_cols:
+            # Similar check with alternative column names
+            session.execute(text("DROP TABLE IF EXISTS cached_forecasts"))
+            session.commit()
+            # Recreate with new schema
+            Base.metadata.create_all(bind=engine)
+        
         # Migrate cached_ideal_stock: add 2w/3w columns if absent.
         ideal_cols = {
             row[1] for row in session.execute(text("PRAGMA table_info(cached_ideal_stock)")).fetchall()

@@ -55,21 +55,43 @@ def calculate_ideal_stock(
     df = forecast_df.merge(stock_df, on="sku", how="left")
     df["current_stock"] = df["current_stock"].fillna(0).astype(int)
 
+    # Calculate cumulative forecasts from individual intervals
+    # Individual intervals: forecast_interval_p1w, forecast_interval_p2w, forecast_interval_p3w, forecast_interval_p4w
+    # Cumulative: 1w, 2w, 3w, 4w (for backward compatibility in calculations)
+    if 'forecast_interval_p1w' in df.columns:
+        df['forecast_1w_cumul'] = df['forecast_interval_p1w'].fillna(0)
+        df['forecast_2w_cumul'] = (
+            df.get('forecast_interval_p1w', 0).fillna(0) +
+            df.get('forecast_interval_p2w', 0).fillna(0)
+        )
+        df['forecast_3w_cumul'] = (
+            df.get('forecast_interval_p1w', 0).fillna(0) +
+            df.get('forecast_interval_p2w', 0).fillna(0) +
+            df.get('forecast_interval_p3w', 0).fillna(0)
+        )
+        df['forecast_4w_cumul'] = df.get('whole_period_forecast', 0).fillna(0)
+    else:
+        # Fallback for old data format (shouldn't happen after migration)
+        df['forecast_1w_cumul'] = df.get('forecast_next_week', 0).fillna(0)
+        df['forecast_2w_cumul'] = df.get('forecast_2w', 0).fillna(0)
+        df['forecast_3w_cumul'] = df.get('forecast_3w', 0).fillna(0)
+        df['forecast_4w_cumul'] = df.get('forecast_next_month', 0).fillna(0)
+
     # идеальный запас
-    df["ideal_stock"] = df["forecast_next_week"] * quote_multiplicator + min_items_in_stock
-    df.loc[df["forecast_next_month"] == 0, "ideal_stock"] = 0
+    df["ideal_stock"] = df["forecast_1w_cumul"] * quote_multiplicator + min_items_in_stock
+    df.loc[df["forecast_4w_cumul"] == 0, "ideal_stock"] = 0
     df["ideal_stock"] = np.ceil(df["ideal_stock"]).astype(int)
 
     df["monthly_ideal_stock"] = (
-        np.ceil(df["forecast_next_month"] * quote_multiplicator + min_items_in_stock)
+        np.ceil(df["forecast_4w_cumul"] * quote_multiplicator + min_items_in_stock)
         .astype(int)
     )
-    df.loc[df["forecast_next_month"] == 0, "monthly_ideal_stock"] = 0
+    df.loc[df["forecast_4w_cumul"] == 0, "monthly_ideal_stock"] = 0
 
     # 2-week and 3-week ideal stocks
     for n_weeks, fc_col, is_col in [
-        (2, 'forecast_2w', 'ideal_stock_2w'),
-        (3, 'forecast_3w', 'ideal_stock_3w'),
+        (2, 'forecast_2w_cumul', 'ideal_stock_2w'),
+        (3, 'forecast_3w_cumul', 'ideal_stock_3w'),
     ]:
         if fc_col in df.columns:
             df[is_col] = np.ceil(df[fc_col] * quote_multiplicator + min_items_in_stock).astype(int)
@@ -112,6 +134,10 @@ def calculate_ideal_stock(
 
     # Ensure unique SKU
     df = df.drop_duplicates(subset='sku')
+
+    # Drop temporary cumulative forecast columns before saving to cache
+    temp_cols = ['forecast_1w_cumul', 'forecast_2w_cumul', 'forecast_3w_cumul', 'forecast_4w_cumul']
+    df = df.drop(columns=[col for col in temp_cols if col in df.columns])
 
     # Save to cache
     save_ideal_stock_cache(df)

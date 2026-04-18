@@ -6,6 +6,7 @@ st.set_page_config(layout="wide")
 from db_utils import get_parameters, get_uploaded_files, update_parameter, update_parameters, reset_database_data, get_all_skus
 from parser import parse_and_save_file, parse_and_save_spoils_file, parse_and_save_price_list_file
 from forecast import get_forecasts
+from forecast_schema import INTERNAL_FORECAST_COLUMNS, build_forecast_display_df
 from ideal_stock import get_ideal_stock, calculate_ideal_stock
 from order_service import build_recommended_orders
 from supplier_service import get_suppliers, update_supplier_info
@@ -158,11 +159,7 @@ tab_sales, tab_orders, tab_suppliers, tab_params = st.tabs(
 trend_weeks = int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4)))
 
 _FORECAST_COLS = [
-    'sku',
-    'whole_period_sales',
-    'sales_last_month', 'sales_last_3w', 'sales_last_2w', 'sales_last_week',
-    'trend_coef',
-    'forecast_next_week', 'forecast_2w', 'forecast_3w', 'forecast_next_month',
+    *INTERNAL_FORECAST_COLUMNS,
 ]
 _IDEAL_STOCK_COLS = [
     'sku', 'current_stock',
@@ -271,15 +268,15 @@ with tab_sales:
                 st.info("В прогнозе пока нет даты из обработанных файлов логов.")
 
             display_forecast_df = forecast_df.copy()
-            if 'last_updated' in display_forecast_df.columns:
-                display_forecast_df = display_forecast_df.drop(columns=['last_updated'])
+            display_forecast_df = build_forecast_display_df(display_forecast_df)
+
             st.dataframe(display_forecast_df)
 
             # Popular and no-demand items: use same period metric as forecast table
             period_weeks = int(params.get('trend_period_weeks', int(params.get('trend_period_months', 2) * 4)))
             all_skus = get_all_skus()
 
-            sales_view = forecast_df[['sku', 'whole_period_sales', 'forecast_next_month']].copy()
+            sales_view = forecast_df[['sku', 'whole_period_sales', 'whole_period_forecast']].copy()
             sales_view['net_sales_period'] = pd.to_numeric(sales_view['whole_period_sales'], errors='coerce').fillna(0)
             sales_view = sales_view.merge(
                 stock_df[['sku', 'current_stock']],
@@ -297,14 +294,14 @@ with tab_sales:
 
             popular = sales_view.loc[
                 sales_view["net_sales_period"] > popular_threshold,
-                ["sku", "net_sales_period", "current_stock", "forecast_next_month"]
+                ["sku", "net_sales_period", "current_stock", "whole_period_forecast"]
             ].sort_values("net_sales_period", ascending=False)
 
             popular = popular.rename(columns={
                 'sku': 'Товар',
                 'net_sales_period': 'Продажи за период',
                 'current_stock': 'Осталось на складе',
-                'forecast_next_month': 'Прогноз на следующий месяц'
+                'whole_period_forecast': 'Прогноз на период'
             })
 
             no_demand = sales_view.loc[sales_view["net_sales_period"] == 0, ["sku"]]
@@ -563,9 +560,16 @@ with tab_params:
                 'min_items_in_stock': new_min_stock,
                 'trend_period_weeks': new_trend_period,
             })
+            
+            # Invalidate all caches to force recalculation
             invalidate_forecast_cache()
             invalidate_ideal_stock_cache()
-            st.success("Параметры сохранены")
+            
+            # Show status message
+            st.success("✓ Параметры сохранены")
+            st.info("Выполняется пересчет прогнозов и всех связанных таблиц...")
+            
+            # Trigger full app rerun with new parameters
             st.rerun()
         except Exception as e:
             st.error(f"Не удалось сохранить параметры: {e}")

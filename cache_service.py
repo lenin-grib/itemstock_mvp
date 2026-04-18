@@ -1,4 +1,6 @@
 from db_utils import get_session, CachedForecast, CachedIdealStock
+from forecast_schema import INTERNAL_FORECAST_COLUMNS
+import pandas as pd
 
 
 def invalidate_forecast_cache():
@@ -38,28 +40,21 @@ def get_cached_forecasts():
             data.append({
                 'sku': f.sku,
                 'whole_period_sales': f.whole_period_sales,
-                'sales_last_month': f.sales_last_month,
-                'sales_last_3w': f.sales_last_3w,
-                'sales_last_2w': f.sales_last_2w,
-                'sales_last_week': f.sales_last_week,
+                'sales_interval_m4w': f.sales_interval_m4w,
+                'sales_interval_m3w': f.sales_interval_m3w,
+                'sales_interval_m2w': f.sales_interval_m2w,
+                'sales_interval_m1w': f.sales_interval_m1w,
                 'trend_coef': f.trend_coef,
-                'forecast_next_week': f.forecast_next_week,
-                'forecast_2w': f.forecast_2w,
-                'forecast_3w': f.forecast_3w,
-                'forecast_next_month': f.forecast_next_month,
+                'forecast_interval_p1w': f.forecast_interval_p1w,
+                'forecast_interval_p2w': f.forecast_interval_p2w,
+                'forecast_interval_p3w': f.forecast_interval_p3w,
+                'forecast_interval_p4w': f.forecast_interval_p4w,
+                'whole_period_forecast': f.whole_period_forecast,
                 'last_updated': f.last_updated,
             })
-        import pandas as pd
         if data:
             return pd.DataFrame(data)
-        return pd.DataFrame(columns=[
-            'sku',
-            'whole_period_sales',
-            'sales_last_month', 'sales_last_3w', 'sales_last_2w', 'sales_last_week',
-            'trend_coef',
-            'forecast_next_week', 'forecast_2w', 'forecast_3w', 'forecast_next_month',
-            'last_updated',
-        ])
+        return pd.DataFrame(columns=INTERNAL_FORECAST_COLUMNS + ['last_updated'])
     finally:
         session.close()
 
@@ -77,15 +72,16 @@ def save_forecast_cache(df):
             cached = CachedForecast(
                 sku=row['sku'],
                 whole_period_sales=row.get('whole_period_sales'),
-                sales_last_week=row.get('sales_last_week'),
-                sales_last_2w=row.get('sales_last_2w'),
-                sales_last_3w=row.get('sales_last_3w'),
-                sales_last_month=row.get('sales_last_month'),
+                sales_interval_m4w=row.get('sales_interval_m4w'),
+                sales_interval_m3w=row.get('sales_interval_m3w'),
+                sales_interval_m2w=row.get('sales_interval_m2w'),
+                sales_interval_m1w=row.get('sales_interval_m1w'),
                 trend_coef=row.get('trend_coef'),
-                forecast_next_week=int(row.get('forecast_next_week', 0) or 0),
-                forecast_2w=int(row.get('forecast_2w', 0) or 0),
-                forecast_3w=int(row.get('forecast_3w', 0) or 0),
-                forecast_next_month=int(row.get('forecast_next_month', 0) or 0),
+                forecast_interval_p1w=int(row.get('forecast_interval_p1w', 0) or 0),
+                forecast_interval_p2w=int(row.get('forecast_interval_p2w', 0) or 0),
+                forecast_interval_p3w=int(row.get('forecast_interval_p3w', 0) or 0),
+                forecast_interval_p4w=int(row.get('forecast_interval_p4w', 0) or 0),
+                whole_period_forecast=int(row.get('whole_period_forecast', 0) or 0),
             )
             session.add(cached)
         session.commit()
