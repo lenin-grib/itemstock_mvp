@@ -42,7 +42,27 @@ latest_logs_processed_date = max(
     default=None,
 )
 has_spoils_file = any(str(f[2] or 'logs') == 'spoils' for f in normalized_uploaded_files)
-uploaded_filenames = [f[1] for f in uploaded_log_files] if uploaded_log_files else []
+
+
+def _uploaded_file_signature(file_obj):
+    if file_obj is None:
+        return None
+    file_id = getattr(file_obj, 'file_id', '')
+    file_name = getattr(file_obj, 'name', '')
+    file_size = getattr(file_obj, 'size', '')
+    return f"{file_id}|{file_name}|{file_size}"
+
+
+if 'processed_log_upload_signatures' not in st.session_state:
+    st.session_state['processed_log_upload_signatures'] = set()
+if 'logs_uploader_selection_signatures' not in st.session_state:
+    st.session_state['logs_uploader_selection_signatures'] = tuple()
+if 'processed_spoils_upload_signature' not in st.session_state:
+    st.session_state['processed_spoils_upload_signature'] = None
+if 'processed_price_upload_signature' not in st.session_state:
+    st.session_state['processed_price_upload_signature'] = None
+if 'processed_supplier_upload_signature' not in st.session_state:
+    st.session_state['processed_supplier_upload_signature'] = None
 
 
 def _file_type_and_name(file_type, raw_filename):
@@ -185,40 +205,43 @@ with tab_sales:
         key="spoils_file"
     )
 
+    current_logs_selection_signatures = tuple(sorted(
+        sig for sig in (_uploaded_file_signature(f) for f in (uploaded_files or [])) if sig is not None
+    ))
+    if current_logs_selection_signatures != st.session_state.get('logs_uploader_selection_signatures', tuple()):
+        # New uploader selection should be processed once, even if filenames already exist in DB.
+        st.session_state['logs_uploader_selection_signatures'] = current_logs_selection_signatures
+        st.session_state['processed_log_upload_signatures'] = set()
+
     if uploaded_files:
+        logs_data_changed = False
         for file in uploaded_files:
-            if file.name in uploaded_filenames:
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button(f"Обновить {file.name}", key=f"update_{file.name}"):
-                        try:
-                            parse_and_save_file(file)
-                            invalidate_forecast_cache()
-                            invalidate_ideal_stock_cache()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Ошибка при обновлении файла {file.name}: {str(e)}")
-                with col2:
-                    st.info(f"Файл {file.name} уже загружен. Нажмите 'Обновить' для замены данных.")
-            else:
-                try:
-                    parse_and_save_file(file)
-                    invalidate_forecast_cache()
-                    invalidate_ideal_stock_cache()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Ошибка при обработке файла {file.name}: {str(e)}")
-        if any(file.name in uploaded_filenames for file in uploaded_files):
+            file_signature = _uploaded_file_signature(file)
+            if file_signature in st.session_state['processed_log_upload_signatures']:
+                continue
+            try:
+                parse_and_save_file(file)
+                invalidate_forecast_cache()
+                invalidate_ideal_stock_cache()
+                if file_signature is not None:
+                    st.session_state['processed_log_upload_signatures'].add(file_signature)
+                logs_data_changed = True
+            except Exception as e:
+                st.error(f"Ошибка при обработке файла {file.name}: {str(e)}")
+        if logs_data_changed:
             st.rerun()
 
     if spoils_file is not None:
-        try:
-            parse_and_save_spoils_file(spoils_file)
-            invalidate_forecast_cache()
-            invalidate_ideal_stock_cache()
-            st.rerun()
-        except Exception as e:
-            st.error(f"Ошибка при обработке файла списаний {spoils_file.name}: {str(e)}")
+        spoils_signature = _uploaded_file_signature(spoils_file)
+        if spoils_signature != st.session_state.get('processed_spoils_upload_signature'):
+            try:
+                parse_and_save_spoils_file(spoils_file)
+                invalidate_forecast_cache()
+                invalidate_ideal_stock_cache()
+                st.session_state['processed_spoils_upload_signature'] = spoils_signature
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка при обработке файла списаний {spoils_file.name}: {str(e)}")
 
     st.divider()
 
@@ -326,11 +349,14 @@ with tab_orders:
     )
 
     if price_list_file is not None:
-        try:
-            parse_and_save_price_list_file(price_list_file)
-            st.rerun()
-        except Exception as e:
-            st.error(f"Ошибка при обработке прайс-листа {price_list_file.name}: {str(e)}")
+        price_signature = _uploaded_file_signature(price_list_file)
+        if price_signature != st.session_state.get('processed_price_upload_signature'):
+            try:
+                parse_and_save_price_list_file(price_list_file)
+                st.session_state['processed_price_upload_signature'] = price_signature
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка при обработке прайс-листа {price_list_file.name}: {str(e)}")
 
     st.divider()
 
@@ -449,11 +475,14 @@ with tab_suppliers:
     )
 
     if supplier_file is not None:
-        try:
-            save_supplier_file(supplier_file)
-            st.rerun()
-        except Exception as e:
-            st.error(f"Ошибка при обработке файла поставщиков: {str(e)}")
+        supplier_signature = _uploaded_file_signature(supplier_file)
+        if supplier_signature != st.session_state.get('processed_supplier_upload_signature'):
+            try:
+                save_supplier_file(supplier_file)
+                st.session_state['processed_supplier_upload_signature'] = supplier_signature
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка при обработке файла поставщиков: {str(e)}")
 
     suppliers_df = get_suppliers()
     if not suppliers_df.empty:
