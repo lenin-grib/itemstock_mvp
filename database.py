@@ -169,6 +169,7 @@ class ApproximatePrice(Base):
 class CachedForecast(Base):
     __tablename__ = 'cached_forecasts'
     sku = Column(String, primary_key=True)
+    trend_period_weeks = Column(Integer)
     whole_period_sales = Column(Float)
     sales_interval_m4w = Column(Float)   # days -27 to -21 (7 days)
     sales_interval_m3w = Column(Float)   # days -20 to -14 (7 days)
@@ -183,6 +184,7 @@ class CachedForecast(Base):
     last_updated = Column(DateTime, default=None)
 
     __table_args__ = (
+        Index('idx_cached_forecast_trend_weeks', 'trend_period_weeks'),
         Index('idx_cached_forecast_updated', 'last_updated'),
     )
 
@@ -263,6 +265,14 @@ def init_db():
             session.commit()
             # Recreate with new schema
             Base.metadata.create_all(bind=engine)
+            forecast_cols = {
+                row[1] for row in session.execute(text("PRAGMA table_info(cached_forecasts)")).fetchall()
+            }
+
+        # Add trend period key column for cache invalidation by parameter.
+        if 'trend_period_weeks' not in forecast_cols:
+            session.execute(text("ALTER TABLE cached_forecasts ADD COLUMN trend_period_weeks INTEGER"))
+            session.execute(text("DELETE FROM cached_forecasts"))
         
         # Migrate cached_ideal_stock: add 2w/3w columns if absent.
         ideal_cols = {

@@ -8,6 +8,22 @@ from forecast_schema import INTERNAL_FORECAST_COLUMNS
 FORECAST_COLUMNS = INTERNAL_FORECAST_COLUMNS
 
 
+def _optimize_forecast_dtypes(df):
+    if df.empty:
+        return df
+
+    float_cols = ['whole_period_sales', 'sales_interval_m4w', 'sales_interval_m3w', 'sales_interval_m2w', 'sales_interval_m1w', 'trend_coef']
+    int_cols = ['forecast_interval_p1w', 'forecast_interval_p2w', 'forecast_interval_p3w', 'forecast_interval_p4w', 'whole_period_forecast']
+
+    for col in float_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
+    for col in int_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('int32')
+    return df
+
+
 def _empty_forecast_row(sku):
     return {
         "sku": sku,
@@ -123,11 +139,12 @@ def calculate_trend_and_forecast(trend_period_weeks=8):
         _empty_cols = FORECAST_COLUMNS.copy()
         if not all_skus:
             result = pd.DataFrame(columns=_empty_cols)
-            save_forecast_cache(result)
+            save_forecast_cache(result, trend_period_weeks=trend_period_weeks)
             return result
         forecasts = [_empty_forecast_row(sku) for sku in all_skus]
         result = pd.DataFrame(forecasts)
-        save_forecast_cache(result)
+        result = _optimize_forecast_dtypes(result)
+        save_forecast_cache(result, trend_period_weeks=trend_period_weeks)
         return result
 
     raw_df['date'] = pd.to_datetime(raw_df['date'])
@@ -217,7 +234,7 @@ def calculate_trend_and_forecast(trend_period_weeks=8):
     _result_cols = FORECAST_COLUMNS.copy()
     if not forecasts:
         result = pd.DataFrame(columns=_result_cols)
-        save_forecast_cache(result)
+        save_forecast_cache(result, trend_period_weeks=trend_period_weeks)
         return result
     result = pd.DataFrame(forecasts)
     result = result.assign(
@@ -230,9 +247,10 @@ def calculate_trend_and_forecast(trend_period_weeks=8):
 
     # Ensure unique SKU
     result = result.drop_duplicates(subset='sku')
+    result = _optimize_forecast_dtypes(result)
 
     # Save to cache
-    save_forecast_cache(result)
+    save_forecast_cache(result, trend_period_weeks=trend_period_weeks)
 
     return result
 
@@ -241,7 +259,7 @@ def get_forecasts(trend_period_weeks=8):
     """
     Возвращает прогнозы из кэша или рассчитывает новые
     """
-    cached = get_cached_forecasts()
+    cached = get_cached_forecasts(trend_period_weeks=trend_period_weeks)
     if not cached.empty and 'sku' in cached.columns:
         ordered_cols = [c for c in FORECAST_COLUMNS if c in cached.columns]
         if 'last_updated' in cached.columns:

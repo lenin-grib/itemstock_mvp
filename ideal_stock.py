@@ -7,6 +7,34 @@ from cache_service import get_cached_ideal_stock, save_ideal_stock_cache, invali
 quote_multiplicator = 1.5
 min_items_in_stock = 5
 
+
+def _optimize_ideal_stock_dtypes(df):
+    if df.empty:
+        return df
+
+    int_like_cols = [
+        'current_stock',
+        'ideal_stock', 'ideal_stock_2w', 'ideal_stock_3w', 'monthly_ideal_stock',
+        'to_order_week', 'to_order_2w', 'to_order_3w', 'to_order_month',
+        'forecast_interval_p1w', 'forecast_interval_p2w', 'forecast_interval_p3w', 'forecast_interval_p4w',
+        'whole_period_forecast',
+    ]
+    float_like_cols = [
+        'whole_period_sales',
+        'sales_interval_m4w', 'sales_interval_m3w', 'sales_interval_m2w', 'sales_interval_m1w',
+        'trend_coef',
+    ]
+
+    for col in int_like_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('int32')
+
+    for col in float_like_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
+
+    return df
+
 def _find_sales_column(df):
     candidates = (
         "qty",
@@ -138,6 +166,7 @@ def calculate_ideal_stock(
     # Drop temporary cumulative forecast columns before saving to cache
     temp_cols = ['forecast_1w_cumul', 'forecast_2w_cumul', 'forecast_3w_cumul', 'forecast_4w_cumul']
     df = df.drop(columns=[col for col in temp_cols if col in df.columns])
+    df = _optimize_ideal_stock_dtypes(df)
 
     # Save to cache
     save_ideal_stock_cache(df)
