@@ -481,11 +481,15 @@ with tab_orders:
                 st.dataframe(styled_df)
 
                 st.subheader("🧾 Рекомендуемые заказы")
-                recommended_orders, missing_supplier_skus, below_min_warnings, zero_price_warnings = build_recommended_orders(
+                recommended_result = build_recommended_orders(
                     order_df,
                     period_weeks=order_period_weeks,
-                    include_zero_price_warnings=True,
+                    return_result_object=True,
                 )
+                recommended_orders = recommended_result.orders
+                missing_supplier_skus = recommended_result.missing_supplier_skus
+                below_min_warnings = recommended_result.below_min_order_warnings
+                zero_price_warnings = recommended_result.zero_price_warnings
 
                 if missing_supplier_skus:
                     st.warning("Не найден поставщик для следующих товаров:")

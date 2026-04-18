@@ -1,4 +1,5 @@
 import re
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -12,6 +13,34 @@ ORDER_PERIOD_TO_ORDER_COLUMN = {
     3: 'to_order_3w',
     4: 'to_order_month',
 }
+
+
+@dataclass
+class RecommendedOrdersResult:
+    orders: list[dict] = field(default_factory=list)
+    missing_supplier_skus: list[str] = field(default_factory=list)
+    below_min_order_warnings: list[dict] = field(default_factory=list)
+    zero_price_warnings: list[dict] = field(default_factory=list)
+
+    def to_legacy_tuple(self, include_zero_price_warnings=False):
+        if include_zero_price_warnings:
+            return (
+                self.orders,
+                self.missing_supplier_skus,
+                self.below_min_order_warnings,
+                self.zero_price_warnings,
+            )
+        return (
+            self.orders,
+            self.missing_supplier_skus,
+            self.below_min_order_warnings,
+        )
+
+
+def _result_return(result, include_zero_price_warnings=False, return_result_object=False):
+    if return_result_object:
+        return result
+    return result.to_legacy_tuple(include_zero_price_warnings=include_zero_price_warnings)
 
 
 def _parse_packaging_units(packaging):
@@ -45,23 +74,31 @@ def _is_without_supplier_name(name):
     return str(name or '').strip().lower() == 'без поставщика'
 
 
-def build_recommended_orders(order_df, period_weeks=4, include_zero_price_warnings=False):
+def build_recommended_orders(
+    order_df,
+    period_weeks=4,
+    include_zero_price_warnings=False,
+    return_result_object=False,
+):
     """
     Build grouped supplier orders for a given period (1-4 weeks).
 
-    period_weeks: 1, 2, 3 or 4 – selects the matching to_order_Xw column.
-        Returns by default:
-            orders: list[dict]
-            missing_supplier_skus: list[str]
-            below_min_order_warnings: list[dict]
+    period_weeks: 1, 2, 3 or 4 - selects the matching to_order_Xw column.
 
-        If include_zero_price_warnings=True, returns an additional 4th element:
-            zero_price_warnings: list[dict]
+    Backward-compatible default return is tuple:
+      (orders, missing_supplier_skus, below_min_order_warnings)
+
+    If include_zero_price_warnings=True, returns tuple with 4th value:
+      (..., zero_price_warnings)
+
+    If return_result_object=True, returns RecommendedOrdersResult.
     """
     if order_df is None or order_df.empty:
-                if include_zero_price_warnings:
-                        return [], [], [], []
-                return [], [], []
+        return _result_return(
+            RecommendedOrdersResult(),
+            include_zero_price_warnings=include_zero_price_warnings,
+            return_result_object=return_result_object,
+        )
 
     to_order_col = ORDER_PERIOD_TO_ORDER_COLUMN.get(int(period_weeks), 'to_order_month')
     if to_order_col not in order_df.columns:
@@ -71,9 +108,11 @@ def build_recommended_orders(order_df, period_weeks=4, include_zero_price_warnin
     required['_qty'] = pd.to_numeric(required['_qty'], errors='coerce').fillna(0)
     required = required[required['_qty'] > 0].copy()
     if required.empty:
-        if include_zero_price_warnings:
-            return [], [], [], []
-        return [], [], []
+        return _result_return(
+            RecommendedOrdersResult(),
+            include_zero_price_warnings=include_zero_price_warnings,
+            return_result_object=return_result_object,
+        )
 
     skus = sorted(set(required['sku']))
 
@@ -185,8 +224,16 @@ def build_recommended_orders(order_df, period_weeks=4, include_zero_price_warnin
                     'items': sorted(set(zero_price_items)),
                 })
 
-        if include_zero_price_warnings:
-            return orders, missing_supplier_skus, below_min_order_warnings, zero_price_warnings
-        return orders, missing_supplier_skus, below_min_order_warnings
+        result = RecommendedOrdersResult(
+            orders=orders,
+            missing_supplier_skus=missing_supplier_skus,
+            below_min_order_warnings=below_min_order_warnings,
+            zero_price_warnings=zero_price_warnings,
+        )
+        return _result_return(
+            result,
+            include_zero_price_warnings=include_zero_price_warnings,
+            return_result_object=return_result_object,
+        )
     finally:
         session.close()

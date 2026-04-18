@@ -371,6 +371,31 @@ class OrderAndSupplierSmokeTests(unittest.TestCase):
 
         self.assertEqual(len(result), 3)
 
+    def test_build_recommended_orders_can_return_result_object(self):
+        rows = [
+            ("A", 1, "S1", 100.0, "2", 0.0, 0.0, "6"),
+        ]
+        fake_session = _FakeSession(rows=rows)
+        order_df = pd.DataFrame(
+            {
+                "sku": ["A"],
+                "to_order_month": [6],
+            }
+        )
+
+        with patch("order_service.get_session", return_value=fake_session):
+            result = order_service.build_recommended_orders(
+                order_df,
+                period_weeks=4,
+                return_result_object=True,
+            )
+
+        self.assertIsInstance(result, order_service.RecommendedOrdersResult)
+        self.assertEqual(result.missing_supplier_skus, [])
+        self.assertEqual(len(result.orders), 1)
+        self.assertEqual(result.orders[0]["supplier_name"], "S1")
+        self.assertEqual(result.zero_price_warnings[0]["items"], ["A"])
+
     def test_build_recommended_orders_contract_structure(self):
         rows = [
             ("A", 1, "S1", 100.0, "2", 0.0, 10.0, "6"),
