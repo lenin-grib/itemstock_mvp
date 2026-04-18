@@ -41,11 +41,13 @@ uploaded_log_files = [
     f for f in normalized_uploaded_files
     if str(f[2] or 'logs') == 'logs'
 ]
+has_logs_files = len(uploaded_log_files) > 0
 latest_logs_processed_date = max(
     (f[5] for f in uploaded_log_files if f[5] is not None),
     default=None,
 )
 has_spoils_file = any(str(f[2] or 'logs') == 'spoils' for f in normalized_uploaded_files)
+has_price_file = any(str(f[2] or 'logs') == 'price' for f in normalized_uploaded_files)
 
 
 def _uploaded_file_signature(file_obj):
@@ -301,6 +303,12 @@ with tab_sales:
 
     st.divider()
 
+    if has_spoils_file and not has_logs_files:
+        st.warning(
+            "Загружен файл списаний, но не загружены файлы логов. "
+            "Загрузите логи, чтобы корректно рассчитать net sales и прогноз."
+        )
+
     if not has_spoils_file:
         st.warning(
             "Прогноз сейчас рассчитывается без учета списаний. "
@@ -411,6 +419,12 @@ with tab_orders:
                 st.error(f"Ошибка при обработке прайс-листа {price_list_file.name}: {str(e)}")
 
     st.divider()
+
+    if has_price_file and not has_logs_files:
+        st.warning(
+            "Загружен прайс-лист, но не загружены файлы логов. "
+            "Сначала загрузите логи, чтобы сформировать основной список товаров и корректные заказы."
+        )
 
     if not ideal_stock_df.empty:
             st.subheader("📦 Склад")

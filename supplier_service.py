@@ -12,6 +12,11 @@ from database import (
 )
 
 
+DEFAULT_SUPPLIER_DELIVERY_TIME_DAYS = '3'
+DEFAULT_SUPPLIER_DELIVERY_COST = 1000.0
+DEFAULT_SUPPLIER_MIN_ORDER = 5000.0
+
+
 def _upsert_uploaded_file(session, filename, file_type, date_from=None, date_to=None):
     existing = session.query(UploadedFile).filter_by(filename=filename).first()
     if existing:
@@ -82,7 +87,12 @@ def save_price_list_file(file):
         for name in sorted(set(data['supplier_name'])):
             supplier = session.query(Supplier).filter_by(name=name).first()
             if not supplier:
-                supplier = Supplier(name=name)
+                supplier = Supplier(
+                    name=name,
+                    delivery_time=DEFAULT_SUPPLIER_DELIVERY_TIME_DAYS,
+                    delivery_cost=DEFAULT_SUPPLIER_DELIVERY_COST,
+                    min_order=DEFAULT_SUPPLIER_MIN_ORDER,
+                )
                 session.add(supplier)
                 session.flush()
             suppliers[name] = supplier

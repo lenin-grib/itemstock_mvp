@@ -105,9 +105,9 @@ class Supplier(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True, nullable=False)
     contact = Column(String)
-    delivery_cost = Column(Float, default=0.0)
-    delivery_time = Column(String)
-    min_order = Column(Float, default=0.0)
+    delivery_cost = Column(Float, default=1000.0)
+    delivery_time = Column(String, default='3')
+    min_order = Column(Float, default=5000.0)
 
 class SupplierItem(Base):
     __tablename__ = 'supplier_items'

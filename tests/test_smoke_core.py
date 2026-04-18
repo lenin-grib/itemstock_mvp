@@ -694,5 +694,48 @@ class DbUtilsIntegrationSmokeTests(unittest.TestCase):
                 engine.dispose()
 
 
+class SupplierDefaultsIntegrationSmokeTests(unittest.TestCase):
+    def test_save_price_list_file_creates_supplier_with_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "test_app.db"
+            engine = create_engine(f"sqlite:///{db_path}")
+            local_session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+            database.Base.metadata.create_all(bind=engine)
+
+            session = local_session()
+            try:
+                session.add(database.Product(sku="SKU-PRICE-001"))
+                session.commit()
+            finally:
+                session.close()
+
+            raw = pd.DataFrame([[None] * 10 for _ in range(3)])
+            raw.iloc[2, 1] = "SKU-PRICE-001"
+            raw.iloc[2, 4] = 150
+            raw.iloc[2, 5] = 100
+            raw.iloc[2, 6] = 0
+            raw.iloc[2, 7] = "1"
+            raw.iloc[2, 9] = "NEW SUPPLIER"
+
+            class FakeFile:
+                name = "price_defaults_test.xlsx"
+
+            with patch("supplier_service.get_session", side_effect=lambda: local_session()), patch(
+                "supplier_service.pd.read_excel", return_value=raw
+            ):
+                supplier_service.save_price_list_file(FakeFile())
+
+            session = local_session()
+            try:
+                supplier = session.query(database.Supplier).filter_by(name="NEW SUPPLIER").first()
+                self.assertIsNotNone(supplier)
+                self.assertEqual(float(supplier.delivery_cost), 1000.0)
+                self.assertEqual(str(supplier.delivery_time), "3")
+                self.assertEqual(float(supplier.min_order), 5000.0)
+            finally:
+                session.close()
+                engine.dispose()
+
+
 if __name__ == "__main__":
     unittest.main()
