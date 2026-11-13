@@ -91,12 +91,19 @@ jobs:
             microk8s kubectl create namespace $NAMESPACE --dry-run=client -o yaml | microk8s kubectl apply -f -
 
             # Ensure ingress controller is enabled
-            microk8s enable ingress || true
-            microk8s enable cert-manager || true
+            microk8s enable ingress
+            microk8s enable cert-manager
             echo "Waiting for cert-manager to be ready..."
-            microk8s kubectl wait --for=condition=Available deployment/cert-manager -n cert-manager --timeout=180s || true
-            microk8s kubectl wait --for=condition=Available deployment/cert-manager-webhook -n cert-manager --timeout=180s || true
-            microk8s kubectl wait --for=condition=Available deployment/cert-manager-cainjector -n cert-manager --timeout=180s || true
+            for component in cert-manager cert-manager-webhook cert-manager-cainjector; do
+              if ! microk8s kubectl rollout status "deployment/$component" -n cert-manager --timeout=180s; then
+                echo "ERROR: $component did not become ready; refusing to deploy."
+                microk8s kubectl get --raw='/readyz?verbose' || true
+                microk8s kubectl get pods -n cert-manager -o wide || true
+                microk8s kubectl describe "deployment/$component" -n cert-manager || true
+                microk8s kubectl get events -n cert-manager --sort-by=.lastTimestamp || true
+                exit 1
+              fi
+            done
             
             # Apply manifests
             echo "Applying Kubernetes manifests..."

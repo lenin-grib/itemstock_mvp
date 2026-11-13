@@ -270,6 +270,11 @@ Important:
 - Current Deployment uses `imagePullPolicy: Never` and image `itemstock:latest`.
 - This is suitable for local cluster workflows (for example, Minikube with local image load).
 - For remote clusters, push image to a registry and update Deployment image and pull policy.
+- The MicroK8s GitHub Actions workflow imports the image into the server's containerd
+  and stops if cert-manager does not roll out successfully. Check the workflow's
+  diagnostic output, `microk8s kubectl get --raw='/readyz?verbose'`, and
+  `microk8s kubectl get pods -A` if deployment times out. Also check server memory:
+  a healthy cert-manager pod alone does not guarantee that the Kubernetes API is ready.
 
 ## Utility Script
 
